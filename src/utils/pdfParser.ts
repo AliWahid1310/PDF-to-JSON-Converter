@@ -93,8 +93,8 @@ function extractOptions(block: string): { options: Record<string, string>; befor
 }
 
 export async function parseExamPdfs(
-  qpBuffer: Buffer,
-  msBuffer: Buffer,
+  qpBuffer: ArrayBuffer | Uint8Array,
+  msBuffer: ArrayBuffer | Uint8Array,
   filename: string
 ): Promise<ExamMergedJson> {
   // 1. Extract text from Marking Scheme using unpdf

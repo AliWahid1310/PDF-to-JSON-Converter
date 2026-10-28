@@ -22,6 +22,8 @@ import {
   GraduationCap
 } from "lucide-react";
 
+import { parseExamPdfs } from "@/utils/pdfParser";
+
 export default function Home() {
   const [questionPaper, setQuestionPaper] = useState<File | null>(null);
   const [markingScheme, setMarkingScheme] = useState<File | null>(null);
@@ -52,25 +54,68 @@ export default function Home() {
 
     try {
       const targetPdfUrl = questionPaper.name || "exam.pdf";
-      const formData = new FormData();
-      formData.append("questionPaper", questionPaper);
-      formData.append("markingScheme", markingScheme);
-      formData.append("pdfUrl", targetPdfUrl);
 
-      const res = await fetch("/api/generate", {
-        method: "POST",
-        body: formData,
-      });
+      // 1. Try parsing directly in the browser (client-side) first.
+      // This completely eliminates Vercel's 4.5MB serverless payload limit (HTTP 413 Request Entity Too Large),
+      // allowing files of any size (such as large papers with diagrams) to be parsed instantly and privately.
+      let examData: ExamMergedJson | null = null;
+      let clientParseError: string | null = null;
 
-      const jsonRes: GenerateApiResponse = await res.json();
-
-      if (!res.ok || !jsonRes.success) {
-        throw new Error(jsonRes.error || "Failed to parse exam PDFs.");
+      try {
+        const qpBuffer = await questionPaper.arrayBuffer();
+        const msBuffer = await markingScheme.arrayBuffer();
+        const parsed = await parseExamPdfs(qpBuffer, msBuffer, targetPdfUrl);
+        if (parsed && parsed.questions && parsed.questions.length > 0) {
+          examData = parsed;
+        }
+      } catch (err: any) {
+        console.warn("Client-side parse attempted:", err);
+        clientParseError = err?.message;
       }
 
-      if (jsonRes.data) {
-        setResultData(jsonRes.data);
-        setRawJson(jsonRes.rawJson || JSON.stringify(jsonRes.data, null, 2));
+      // 2. If client-side parse did not produce questions, fallback to /api/generate
+      if (!examData) {
+        const formData = new FormData();
+        formData.append("questionPaper", questionPaper);
+        formData.append("markingScheme", markingScheme);
+        formData.append("pdfUrl", targetPdfUrl);
+
+        const res = await fetch("/api/generate", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (res.status === 413) {
+          throw new Error(
+            "Uploaded PDF is too large for server processing (exceeds 4.5MB limit). " +
+            (clientParseError ? `(Direct parser: ${clientParseError})` : "")
+          );
+        }
+
+        const responseText = await res.text();
+        let jsonRes: GenerateApiResponse;
+        try {
+          jsonRes = JSON.parse(responseText);
+        } catch {
+          throw new Error(responseText.slice(0, 200) || "Failed to parse exam PDFs.");
+        }
+
+        if (!res.ok || !jsonRes.success) {
+          throw new Error(jsonRes.error || "Failed to parse exam PDFs.");
+        }
+
+        if (jsonRes.data) {
+          examData = jsonRes.data;
+        }
+      }
+
+      if (examData) {
+        setResultData(examData);
+        setRawJson(JSON.stringify(examData, null, 2));
+      } else {
+        throw new Error(
+          "Could not detect questions in the uploaded Question Paper. Please ensure the PDF has selectable text."
+        );
       }
 
       setTimeout(() => {
