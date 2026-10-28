@@ -35,22 +35,23 @@ export async function POST(req: NextRequest) {
       verifiedAnswer: q.correctAnswer,
     }));
 
-    const prompt = `You are an expert Cambridge teacher in ${subject || "Science"}.
-You are provided with a verified list of multiple-choice exam questions and their OFFICIAL verified marking scheme answers.
+    const prompt = `You are a distinguished academic teacher and subject expert in ${subject || "Science"}.
+You are provided with a verified list of exam questions, multiple-choice options, and the verified correct answer for each.
 
-Your task is to write a clear, accurate, and concise 1-2 sentence academic explanation for each question explaining WHY the specified verified answer is correct.
+Your task is to write a rigorous, high-quality, 1-3 sentence academic and conceptual explanation for each question explaining WHY that specific answer is scientifically/conceptually correct.
 
-CRITICAL CONSTRAINTS:
-1. Do NOT change the question number or the verified answer.
-2. Return ONLY a pure JSON object mapping each question number (as a string key) to its explanation string.
-Example format:
+STRICT CONSTRAINTS:
+1. NEVER mention "the marking scheme", "mark scheme", "the answer key", or "the official answer". Write as an authoritative teacher explaining the concept, formulas, calculations, or underlying scientific principles directly.
+2. Address the concept directly. For example: "Work is a scalar quantity because it is defined as the product of force and displacement, having magnitude only without directional dependence. In contrast, force, momentum, and velocity all possess both magnitude and direction, making them vector quantities."
+3. Do NOT change any question number or correct answer. The mapping is fixed.
+4. Return ONLY a pure JSON object where each key is the string question number and the value is the explanation string:
 {
-  "1": "Work is a scalar quantity because it has magnitude only and is the scalar product of force and displacement, whereas force, momentum, and velocity are all vectors.",
-  "2": "A systematic error causes all readings to shift consistently in one direction away from the true value, thus affecting accuracy rather than precision."
+  "1": "Explanation for question 1...",
+  "2": "Explanation for question 2..."
 }
-3. Output valid JSON only, without markdown fences or additional text.
+5. Output valid JSON only, without markdown fences or any other commentary.
 
-Here are the questions:
+Questions to explain:
 ${JSON.stringify(promptQuestions, null, 2)}`;
 
     let responseText = "";

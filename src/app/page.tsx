@@ -20,7 +20,8 @@ import {
   Calendar,
   Clock,
   Layers,
-  GraduationCap
+  GraduationCap,
+  Key
 } from "lucide-react";
 
 import { parseExamPdfs } from "@/utils/pdfParser";
@@ -339,6 +340,31 @@ export default function Home() {
             </div>
           )}
 
+          {/* Optional Gemini API Key bar for instant academic explanation synthesis */}
+          <div className="api-key-inline-bar">
+            <Key className="w-4 h-4 text-black flex-shrink-0" />
+            <span className="api-key-inline-label">Gemini API Key (optional):</span>
+            <input
+              type="password"
+              placeholder="Paste Google Gemini Key to write deep academic explanations..."
+              value={apiKey}
+              onChange={(e) => handleSaveApiKey(e.target.value)}
+              className="api-key-inline-input"
+            />
+            {apiKey ? (
+              <span className="api-key-active-badge">✓ Explanations Active</span>
+            ) : (
+              <a
+                href="https://aistudio.google.com/app/apikey"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="api-key-get-link"
+              >
+                Get Free Key
+              </a>
+            )}
+          </div>
+
           {/* Action Trigger Button */}
           <div className="action-row">
             {(questionPaper || markingScheme || resultData) && (
@@ -506,6 +532,44 @@ export default function Home() {
                 <span className="stat-desc">Clean Output Ensured</span>
               </div>
             </div>
+
+            {/* Explanation Synthesis Callout if not yet enriched */}
+            {resultData.questions?.[0]?.explanation?.startsWith("Correct option is") && (
+              <div className="explanation-callout-card">
+                <div className="explanation-callout-text">
+                  <Sparkles className="w-5 h-5 text-yellow-accent flex-shrink-0" />
+                  <div>
+                    <h4 className="font-bold text-sm text-black">
+                      Want conceptual explanations for why each answer is correct?
+                    </h4>
+                    <p className="text-xs text-zinc-600">
+                      Questions and verified answers remain locked. Generate scientific explanations without altering any answers.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!apiKey) setIsKeyModalOpen(true);
+                    else handleEnrichExplanations(resultData);
+                  }}
+                  disabled={isExplaining}
+                  className="btn-action-solid"
+                >
+                  {isExplaining ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>Writing Explanations...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-4 h-4" />
+                      <span>Generate Concept Explanations</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            )}
 
             {/* JSON Output */}
             <JsonViewer

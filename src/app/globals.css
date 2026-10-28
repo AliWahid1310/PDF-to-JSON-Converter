@@ -1578,6 +1578,83 @@ html, body {
   font-weight: 600;
 }
 
+/* Inline API Key Bar */
+.api-key-inline-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #fffdf5;
+  border: 1.5px solid var(--yellow-border);
+  border-radius: var(--radius-sm);
+  padding: 10px 16px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.api-key-inline-label {
+  font-size: 0.8rem;
+  font-weight: 800;
+  color: #000000;
+  white-space: nowrap;
+}
+
+.api-key-inline-input {
+  flex: 1;
+  min-width: 200px;
+  background: #ffffff;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 7px 12px;
+  font-size: 0.82rem;
+  outline: none;
+  font-family: monospace;
+}
+
+.api-key-inline-input:focus {
+  border-color: #000000;
+  box-shadow: 0 0 0 1px #000000;
+}
+
+.api-key-active-badge {
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: #15803d;
+  background: #dcfce7;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  white-space: nowrap;
+}
+
+.api-key-get-link {
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: #000000;
+  text-decoration: underline;
+  white-space: nowrap;
+}
+
+/* Explanation Callout Banner */
+.explanation-callout-card {
+  background: #fffdf5;
+  border: 2px solid var(--yellow-border);
+  border-radius: var(--radius-md);
+  padding: 16px 20px;
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.explanation-callout-text {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex: 1;
+  min-width: 260px;
+}
+
 /* Utilities */
 .animate-spin { animation: spin 1s linear infinite; }
 .empty-text { color: var(--text-muted); text-align: center; padding: 24px; font-weight: 600; }
