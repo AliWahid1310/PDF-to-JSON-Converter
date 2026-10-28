@@ -1,9 +1,32 @@
 import { extractText } from "unpdf";
 import { ExamMergedJson, QuestionItem } from "@/types/exam";
 
+function stripArtifacts(text: string): string {
+  if (!text) return "";
+  return text
+    // Comprehensive Cambridge copyright notices (including 2026+ variations)
+    .replace(/©\s*(?:Cambridge University Press & Assessment|Cambridge Assessment International Education|UCLES|Cambridge International Examinations|Cambridge International)[^\n]*/gi, "")
+    .replace(/Cambridge University Press & Assessment[^\n]*/gi, "")
+    .replace(/Cambridge Assessment International Education[^\n]*/gi, "")
+    .replace(/Cambridge International Examinations[^\n]*/gi, "")
+    .replace(/©\s*[A-Za-z\s&]+\d{4}[^\n]*/g, "")
+    // Turn over notices
+    .replace(/\[?\bTurn over\b\]?/gi, "")
+    // Blank page notices
+    .replace(/\bBLANK PAGE\b/gi, "")
+    // Cambridge syllabus/paper footer codes like 9700/12/M/J/26, 9702/12/F/M/25
+    .replace(/\b\d{4}\/\d{2}\/[A-Za-z0-9\/]+\b/gi, "")
+    // Barcode strings like *4146915581*
+    .replace(/\*[0-9]{8,}\*/g, "")
+    // Print batch codes like IB25 03_9702_12/3RP
+    .replace(/^IB\d{2}\s+[^\n]+/gm, "")
+    // Lone page numbers
+    .replace(/^\s*\d{1,3}\s*$/gm, "");
+}
+
 function cleanText(t: string): string {
   if (!t) return "";
-  return t
+  return stripArtifacts(t)
     .replace(/[\t\r]+/g, " ")
     .replace(/[ ]{2,}/g, " ")
     .replace(/\s*\n\s*/g, "\n")
@@ -84,7 +107,7 @@ function extractOptions(block: string): { options: Record<string, string>; befor
         C: cleanText(nlMatch[3]),
         D: cleanText(nlMatch[4]),
       },
-      beforeOptions: block.slice(0, nlMatch.index).trim(),
+      beforeOptions: cleanText(block.slice(0, nlMatch.index)),
     };
   }
 
@@ -98,7 +121,7 @@ function extractOptions(block: string): { options: Record<string, string>; befor
         C: cleanText(flexMatch[3]),
         D: cleanText(flexMatch[4]),
       },
-      beforeOptions: block.slice(0, flexMatch.index).trim(),
+      beforeOptions: cleanText(block.slice(0, flexMatch.index)),
     };
   }
 
@@ -115,7 +138,7 @@ function extractOptions(block: string): { options: Record<string, string>; befor
           C: cleanText(subMatch[3]),
           D: cleanText(subMatch[4]),
         },
-        beforeOptions: block.slice(0, lastAIdx).trim(),
+        beforeOptions: cleanText(block.slice(0, lastAIdx)),
       };
     }
   }
@@ -164,12 +187,7 @@ export async function parseExamPdfs(
 
   let bodyText = "";
   for (let idx = pStart; idx < qpPages.length; idx++) {
-    const cleaned = qpPages[idx]
-      .replace(/©\s*UCLES\s*\d{4}/gi, "")
-      .replace(/\[Turn over/gi, "")
-      .replace(/\d{4}\/\d{2}\/[A-Z\/]+\/\d+/gi, "")
-      .replace(/Cambridge International[^\n]*/gi, "")
-      .replace(/^\s*\d+\s*$/gm, ""); // lone page numbers
+    const cleaned = stripArtifacts(qpPages[idx]);
     bodyText += "\n" + cleaned;
   }
 
