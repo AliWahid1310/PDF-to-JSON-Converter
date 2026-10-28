@@ -4,21 +4,35 @@ import { ExamMergedJson, QuestionItem } from "@/types/exam";
 function stripArtifacts(text: string): string {
   if (!text) return "";
   return text
-    // Comprehensive Cambridge copyright notices (including 2026+ variations)
+    // PapaCambridge watermarks & download banners
+    .replace(/PapaCambridge[^\n]*/gi, "")
+    .replace(/papacambridge\.com[^\n]*/gi, "")
+    .replace(/Downloaded from [^\n]*/gi, "")
+    .replace(/Licensed for hosting on [^\n]*/gi, "")
+    .replace(/Re-uploading, mirroring or re-hosting[^\n]*/gi, "")
+    .replace(/Trace ID:\s*[^\n]*/gi, "")
+    .replace(/.*Source:\s*papacambridge\.com[^\n]*/gi, "")
+    .replace(/.*Question Paper\s+(?:June|November|March|February)\s+\d{4}[^\n]*/gi, "")
+    // Other past paper sites
+    .replace(/www\.gceguide\.com[^\n]*/gi, "")
+    .replace(/gceguide\.com[^\n]*/gi, "")
+    .replace(/dynamicpapers\.com[^\n]*/gi, "")
+    .replace(/bestexamhelp\.com[^\n]*/gi, "")
+    .replace(/physicsandmathstutor\.com[^\n]*/gi, "")
+    // Cambridge copyright notices (including 2026+ variations)
     .replace(/©\s*(?:Cambridge University Press & Assessment|Cambridge Assessment International Education|UCLES|Cambridge International Examinations|Cambridge International)[^\n]*/gi, "")
     .replace(/Cambridge University Press & Assessment[^\n]*/gi, "")
     .replace(/Cambridge Assessment International Education[^\n]*/gi, "")
     .replace(/Cambridge International Examinations[^\n]*/gi, "")
     .replace(/©\s*[A-Za-z\s&]+\d{4}[^\n]*/g, "")
-    // Turn over notices
+    // Turn over & blank page notices
     .replace(/\[?\bTurn over\b\]?/gi, "")
-    // Blank page notices
     .replace(/\bBLANK PAGE\b/gi, "")
-    // Cambridge syllabus/paper footer codes like 9700/12/M/J/26, 9702/12/F/M/25
+    // Syllabus footer codes like 9700/11/M/J/26
     .replace(/\b\d{4}\/\d{2}\/[A-Za-z0-9\/]+\b/gi, "")
-    // Barcode strings like *4146915581*
+    // Barcode strings like *4083621324*
     .replace(/\*[0-9]{8,}\*/g, "")
-    // Print batch codes like IB25 03_9702_12/3RP
+    // Print batch codes
     .replace(/^IB\d{2}\s+[^\n]+/gm, "")
     // Lone page numbers
     .replace(/^\s*\d{1,3}\s*$/gm, "");
@@ -97,48 +111,49 @@ function parseMarkingScheme(msText: string): Map<number, { answer: string; marks
 }
 
 function extractOptions(block: string): { options: Record<string, string>; beforeOptions: string } | null {
-  // Pattern 1: Options on separate lines at the bottom of the question: \nA ... \nB ... \nC ... \nD ...
-  const nlMatch = block.match(/\n[ \t]*A[ \t]+([\s\S]+?)\n[ \t]*B[ \t]+([\s\S]+?)\n[ \t]*C[ \t]+([\s\S]+?)\n[ \t]*D[ \t]+([\s\S]+)$/);
-  if (nlMatch) {
-    return {
-      options: {
-        A: cleanText(nlMatch[1]),
-        B: cleanText(nlMatch[2]),
-        C: cleanText(nlMatch[3]),
-        D: cleanText(nlMatch[4]),
-      },
-      beforeOptions: cleanText(block.slice(0, nlMatch.index)),
-    };
+  if (!block) return null;
+
+  // Find all candidate start positions for Option A (preceded by start of string, newline, or 2+ spaces)
+  const aMatches: number[] = [];
+  const aRegex = /(?:^|\n|[ \t]{2,})A[ \t]+/g;
+  let m: RegExpExecArray | null;
+  while ((m = aRegex.exec(block)) !== null) {
+    const aPos = m.index + m[0].indexOf("A");
+    aMatches.push(aPos);
   }
 
-  // Pattern 2: Flexible horizontal or wrapped options: (?:^|\n)[ \t]*A[ \t]+ ... (?:[ \t]+|\n)B[ \t]+ ...
-  const flexMatch = block.match(/(?:^|\n)[ \t]*A[ \t]+([\s\S]+?)(?:[ \t]+|\n)B[ \t]+([\s\S]+?)(?:[ \t]+|\n)C[ \t]+([\s\S]+?)(?:[ \t]+|\n)D[ \t]+([\s\S]+)$/);
-  if (flexMatch) {
-    return {
-      options: {
-        A: cleanText(flexMatch[1]),
-        B: cleanText(flexMatch[2]),
-        C: cleanText(flexMatch[3]),
-        D: cleanText(flexMatch[4]),
-      },
-      beforeOptions: cleanText(block.slice(0, flexMatch.index)),
-    };
-  }
+  // Iterate backwards from the LAST occurrence of A to the first.
+  // This guarantees that questions starting with 'A <word>' or questions containing numbered statements
+  // never swallow their text into Option A, and always match the real options at the end.
+  for (let i = aMatches.length - 1; i >= 0; i--) {
+    const aPos = aMatches[i];
+    const sub = block.slice(aPos);
 
-  // Pattern 3: Fallback from the last occurrence of \nA
-  const lastAIdx = block.lastIndexOf("\nA");
-  if (lastAIdx !== -1) {
-    const sub = block.slice(lastAIdx);
-    const subMatch = sub.match(/\nA[ \t]+([\s\S]+?)(?:(?:\n|\s{2,})B[ \t]+)([\s\S]+?)(?:(?:\n|\s{2,})C[ \t]+)([\s\S]+?)(?:(?:\n|\s{2,})D[ \t]+)([\s\S]+)$/);
-    if (subMatch) {
+    // Try separate lines: A ... \nB ... \nC ... \nD ...
+    const nlMatch = sub.match(/^A[ \t]+([\s\S]+?)\n[ \t]*B[ \t]+([\s\S]+?)\n[ \t]*C[ \t]+([\s\S]+?)\n[ \t]*D[ \t]+([\s\S]+)$/);
+    if (nlMatch) {
       return {
         options: {
-          A: cleanText(subMatch[1]),
-          B: cleanText(subMatch[2]),
-          C: cleanText(subMatch[3]),
-          D: cleanText(subMatch[4]),
+          A: cleanText(nlMatch[1]),
+          B: cleanText(nlMatch[2]),
+          C: cleanText(nlMatch[3]),
+          D: cleanText(nlMatch[4]),
         },
-        beforeOptions: cleanText(block.slice(0, lastAIdx)),
+        beforeOptions: cleanText(block.slice(0, aPos)),
+      };
+    }
+
+    // Try horizontal/inline options: A ... B ... C ... D ...
+    const flexMatch = sub.match(/^A[ \t]+([\s\S]+?)(?:[ \t]+|\n)B[ \t]+([\s\S]+?)(?:[ \t]+|\n)C[ \t]+([\s\S]+?)(?:[ \t]+|\n)D[ \t]+([\s\S]+)$/);
+    if (flexMatch) {
+      return {
+        options: {
+          A: cleanText(flexMatch[1]),
+          B: cleanText(flexMatch[2]),
+          C: cleanText(flexMatch[3]),
+          D: cleanText(flexMatch[4]),
+        },
+        beforeOptions: cleanText(block.slice(0, aPos)),
       };
     }
   }
@@ -187,8 +202,7 @@ export async function parseExamPdfs(
 
   let bodyText = "";
   for (let idx = pStart; idx < qpPages.length; idx++) {
-    const cleaned = stripArtifacts(qpPages[idx]);
-    bodyText += "\n" + cleaned;
+    bodyText += "\n" + stripArtifacts(qpPages[idx]);
   }
 
   // 4. Sequential Question Extraction:
@@ -213,17 +227,33 @@ export async function parseExamPdfs(
 
     const matchIndexInFull = searchOffset + (match.index || 0);
 
-    // Find where the next question begins to delimit the current question block
+    // Find where the next question begins to delimit the current question block.
+    // If the current question contains numbered statements (e.g. 1, 2, 3 in Question 2),
+    // next question candidate is only valid if options A, B, C, D occur before it!
     let nextMatchIndexInFull = bodyText.length;
     if (qNum < totalQuestions) {
       const nextQRegex = new RegExp(
         '(?:^|\\n)[ \\t]*' + nextQ + '[ \\t]+(?=[^\\n]*[A-Za-z])([^\\n]{6,})',
-        'm'
+        'gm'
       );
-      const nextSlice = bodyText.slice(matchIndexInFull + match[0].length);
-      const nextMatch = nextSlice.match(nextQRegex);
-      if (nextMatch && nextMatch.index !== undefined) {
-        nextMatchIndexInFull = matchIndexInFull + match[0].length + nextMatch.index;
+      const searchRegion = bodyText.slice(matchIndexInFull + match[0].length);
+      let candidate: RegExpExecArray | null;
+      let chosenIndex = -1;
+
+      while ((candidate = nextQRegex.exec(searchRegion)) !== null) {
+        const textBeforeCandidate = searchRegion.slice(0, candidate.index);
+        const hasOptionsBefore = extractOptions(textBeforeCandidate) !== null;
+
+        if (hasOptionsBefore) {
+          chosenIndex = candidate.index;
+          break;
+        } else {
+          chosenIndex = candidate.index;
+        }
+      }
+
+      if (chosenIndex !== -1) {
+        nextMatchIndexInFull = matchIndexInFull + match[0].length + chosenIndex;
       }
     }
 
@@ -255,7 +285,8 @@ export async function parseExamPdfs(
       explanation,
     });
 
-    searchOffset = matchIndexInFull + match[0].length;
+    // Advance searchOffset to the boundary of the next question
+    searchOffset = nextMatchIndexInFull;
   }
 
   return {
