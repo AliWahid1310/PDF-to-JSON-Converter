@@ -74,19 +74,50 @@ function parseMarkingScheme(msText: string): Map<number, { answer: string; marks
 }
 
 function extractOptions(block: string): { options: Record<string, string>; beforeOptions: string } | null {
-  // Matches A <text> B <text> C <text> D <text>
-  const optRegex = /(?:^|\s|\n)A\s+([\s\S]+?)(?=(?:^|\s|\n)B\s+)(?:^|\s|\n)B\s+([\s\S]+?)(?=(?:^|\s|\n)C\s+)(?:^|\s|\n)C\s+([\s\S]+?)(?=(?:^|\s|\n)D\s+)(?:^|\s|\n)D\s+([\s\S]+)$/;
-  const match = block.match(optRegex);
-  if (match) {
+  // Pattern 1: Options on separate lines at the bottom of the question: \nA ... \nB ... \nC ... \nD ...
+  const nlMatch = block.match(/\n[ \t]*A[ \t]+([\s\S]+?)\n[ \t]*B[ \t]+([\s\S]+?)\n[ \t]*C[ \t]+([\s\S]+?)\n[ \t]*D[ \t]+([\s\S]+)$/);
+  if (nlMatch) {
     return {
       options: {
-        A: cleanText(match[1]),
-        B: cleanText(match[2]),
-        C: cleanText(match[3]),
-        D: cleanText(match[4]),
+        A: cleanText(nlMatch[1]),
+        B: cleanText(nlMatch[2]),
+        C: cleanText(nlMatch[3]),
+        D: cleanText(nlMatch[4]),
       },
-      beforeOptions: block.slice(0, match.index).trim(),
+      beforeOptions: block.slice(0, nlMatch.index).trim(),
     };
+  }
+
+  // Pattern 2: Flexible horizontal or wrapped options: (?:^|\n)[ \t]*A[ \t]+ ... (?:[ \t]+|\n)B[ \t]+ ...
+  const flexMatch = block.match(/(?:^|\n)[ \t]*A[ \t]+([\s\S]+?)(?:[ \t]+|\n)B[ \t]+([\s\S]+?)(?:[ \t]+|\n)C[ \t]+([\s\S]+?)(?:[ \t]+|\n)D[ \t]+([\s\S]+)$/);
+  if (flexMatch) {
+    return {
+      options: {
+        A: cleanText(flexMatch[1]),
+        B: cleanText(flexMatch[2]),
+        C: cleanText(flexMatch[3]),
+        D: cleanText(flexMatch[4]),
+      },
+      beforeOptions: block.slice(0, flexMatch.index).trim(),
+    };
+  }
+
+  // Pattern 3: Fallback from the last occurrence of \nA
+  const lastAIdx = block.lastIndexOf("\nA");
+  if (lastAIdx !== -1) {
+    const sub = block.slice(lastAIdx);
+    const subMatch = sub.match(/\nA[ \t]+([\s\S]+?)(?:(?:\n|\s{2,})B[ \t]+)([\s\S]+?)(?:(?:\n|\s{2,})C[ \t]+)([\s\S]+?)(?:(?:\n|\s{2,})D[ \t]+)([\s\S]+)$/);
+    if (subMatch) {
+      return {
+        options: {
+          A: cleanText(subMatch[1]),
+          B: cleanText(subMatch[2]),
+          C: cleanText(subMatch[3]),
+          D: cleanText(subMatch[4]),
+        },
+        beforeOptions: block.slice(0, lastAIdx).trim(),
+      };
+    }
   }
 
   return null;
@@ -115,11 +146,24 @@ export async function parseExamPdfs(
     meta.totalMarks = answersMap.size;
   }
 
-  // 3. Process question body text (skip cover & formula page)
+  // 3. Determine starting page for question extraction:
+  // - Page 1 (index 0) is ALWAYS the cover/instruction sheet.
+  // - Page 2 (index 1) is ONLY skipped if it is a pure formula sheet with no questions.
+  //   In Biology, Chemistry, Economics, Business, Math, etc., Page 2 starts with Question 1!
+  let pStart = 1;
+  if (qpPages.length > 2) {
+    const p2 = qpPages[1];
+    const isFormulaSheet =
+      /acceleration of free fall|speed of light/i.test(p2) &&
+      /\bFormulae\b/i.test(p2);
+    const hasQ1 = /(?:^|\n)[ \t]*1[ \t]+(?=[^\n]*[A-Za-z])[^\n]{6,}/m.test(p2);
+    if (isFormulaSheet && !hasQ1) {
+      pStart = 2;
+    }
+  }
+
   let bodyText = "";
-  for (let idx = 0; idx < qpPages.length; idx++) {
-    const pageNum = idx + 1;
-    if (pageNum <= 2) continue; // skip cover and formula sheets
+  for (let idx = pStart; idx < qpPages.length; idx++) {
     const cleaned = qpPages[idx]
       .replace(/©\s*UCLES\s*\d{4}/gi, "")
       .replace(/\[Turn over/gi, "")
@@ -129,69 +173,71 @@ export async function parseExamPdfs(
     bodyText += "\n" + cleaned;
   }
 
-  // 4. Identify question starts strictly
-  const lines = bodyText.split("\n");
-  const qStarts: { num: number; charIdx: number }[] = [];
-  const seenNumbers = new Set<number>();
+  // 4. Sequential Question Extraction:
+  // Questions in exam papers strictly follow 1, 2, 3, ..., N in sequential order.
+  const totalQuestions = answersMap.size > 0 ? answersMap.size : 40;
+  const questions: QuestionItem[] = [];
+  let searchOffset = 0;
 
-  let charOffset = 0;
-  for (let i = 0; i < lines.length; i++) {
-    const l = lines[i];
-    const m = l.match(/^(\d{1,3})\s+([A-Z][^\n]+)/);
-    if (m) {
-      const qNum = parseInt(m[1], 10);
-      // Valid question number in range and not seen yet
-      if (qNum >= 1 && qNum <= 100 && !seenNumbers.has(qNum)) {
-        // If answersMap exists, prioritize numbers in answersMap
-        if (answersMap.size === 0 || answersMap.has(qNum)) {
-          seenNumbers.add(qNum);
-          qStarts.push({ num: qNum, charIdx: charOffset });
-        }
+  for (let qNum = 1; qNum <= totalQuestions; qNum++) {
+    const nextQ = qNum + 1;
+    // Header pattern: number at start of line, followed by substantive text containing letters
+    const qStartRegex = new RegExp(
+      '(?:^|\\n)[ \\t]*' + qNum + '[ \\t]+(?=[^\\n]*[A-Za-z])([^\\n]{6,})',
+      'm'
+    );
+    const slice = bodyText.slice(searchOffset);
+    const match = slice.match(qStartRegex);
+
+    if (!match) {
+      continue;
+    }
+
+    const matchIndexInFull = searchOffset + (match.index || 0);
+
+    // Find where the next question begins to delimit the current question block
+    let nextMatchIndexInFull = bodyText.length;
+    if (qNum < totalQuestions) {
+      const nextQRegex = new RegExp(
+        '(?:^|\\n)[ \\t]*' + nextQ + '[ \\t]+(?=[^\\n]*[A-Za-z])([^\\n]{6,})',
+        'm'
+      );
+      const nextSlice = bodyText.slice(matchIndexInFull + match[0].length);
+      const nextMatch = nextSlice.match(nextQRegex);
+      if (nextMatch && nextMatch.index !== undefined) {
+        nextMatchIndexInFull = matchIndexInFull + match[0].length + nextMatch.index;
       }
     }
-    charOffset += l.length + 1;
-  }
 
-  // Sort by question number to ensure sequential order
-  qStarts.sort((a, b) => a.num - b.num);
-
-  const questions: QuestionItem[] = [];
-
-  for (let i = 0; i < qStarts.length; i++) {
-    const current = qStarts[i];
-    const next = qStarts[i + 1];
-
-    const blockText = bodyText
-      .slice(current.charIdx, next ? next.charIdx : undefined)
-      .trim();
-
-    // Strip question number at start
-    const withoutNum = blockText.replace(/^\d{1,3}\s+/, "").trim();
+    const rawBlock = bodyText.slice(matchIndexInFull, nextMatchIndexInFull).trim();
+    // Strip leading question number
+    const withoutNum = rawBlock.replace(/^[ \t]*\d{1,3}[ \t]+/, "").trim();
 
     const optResult = extractOptions(withoutNum);
     let questionText = withoutNum;
     let options: Record<string, string> | undefined = undefined;
 
-    if (optResult) {
+    if (optResult && Object.keys(optResult.options).length === 4) {
       questionText = optResult.beforeOptions;
       options = optResult.options;
     }
 
-    const msData = answersMap.get(current.num) || { answer: "", marks: 1 };
+    const msData = answersMap.get(qNum) || { answer: "", marks: 1 };
     const ansLetter = msData.answer || "";
 
-    // Construct clean baseline explanation without mentioning marking scheme
     const optText = options && ansLetter && options[ansLetter] ? `: ${options[ansLetter]}` : "";
     const explanation = `Correct option is ${ansLetter}${optText}.`;
 
     questions.push({
-      number: current.num,
+      number: qNum,
       question: cleanText(questionText),
       ...(options ? { options } : {}),
       correctAnswer: ansLetter,
       marks: msData.marks || 1,
       explanation,
     });
+
+    searchOffset = matchIndexInFull + match[0].length;
   }
 
   return {
