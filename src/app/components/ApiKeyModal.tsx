@@ -55,9 +55,9 @@ export default function ApiKeyModal({
               <Key className="w-5 h-5 text-black" />
             </div>
             <div>
-              <h3 className="modal-title">AI Explanations Key</h3>
+              <h3 className="modal-title">Custom Gemini API Key</h3>
               <p className="modal-subtitle">
-                Synthesize detailed teacher explanations for verified answers
+                A shared API key is already active for everyone. You can optionally use your own key.
               </p>
             </div>
           </div>

@@ -81,11 +81,7 @@ export default function Home() {
       return;
     }
 
-    const keyToUse = customKey || apiKey;
-    if (!keyToUse) {
-      setIsKeyModalOpen(true);
-      return;
-    }
+    const keyToUse = customKey || apiKey || "";
 
     setIsExplaining(true);
     setErrorMessage(null);
@@ -124,7 +120,7 @@ export default function Home() {
       }
     } catch (err: any) {
       console.error(err);
-      setErrorMessage(err.message || "Could not synthesize AI explanations. Check your API key.");
+      setErrorMessage(err.message || "Could not synthesize AI explanations.");
     } finally {
       setIsExplaining(false);
     }
@@ -202,33 +198,33 @@ export default function Home() {
         setResultData(examData);
         setRawJson(JSON.stringify(examData, null, 2));
 
-        // 3. If API key is available, automatically synthesize deep explanations!
-        if (apiKey) {
-          setProgressStep(4);
-          try {
-            const explainRes = await fetch("/api/explain", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                questions: examData.questions,
-                subject: examData.subject,
-                apiKey,
-              }),
-            });
-            const explainJson = await explainRes.json();
-            if (explainJson.success && explainJson.explanations) {
-              const enrichedQuestions = examData.questions.map((q) => ({
-                ...q,
-                explanation:
-                  explainJson.explanations[String(q.number)] || q.explanation,
-              }));
-              const enrichedData = { ...examData, questions: enrichedQuestions };
-              setResultData(enrichedData);
-              setRawJson(JSON.stringify(enrichedData, null, 2));
-            }
-          } catch (explainErr) {
-            console.warn("Auto-enrichment skipped:", explainErr);
+        // 3. Automatically synthesize high-accuracy teacher explanations for all users!
+        setProgressStep(4);
+        try {
+          const explainRes = await fetch("/api/explain", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              questions: examData.questions,
+              subject: examData.subject,
+              apiKey: apiKey || "",
+            }),
+          });
+          const explainJson = await explainRes.json();
+          if (explainJson.success && explainJson.explanations) {
+            // STRICT GUARANTEE: update ONLY the explanation field by question number.
+            // question number, question text, options, and correctAnswer are 100% immutable.
+            const enrichedQuestions = examData.questions.map((q) => ({
+              ...q,
+              explanation:
+                explainJson.explanations[String(q.number)] || q.explanation,
+            }));
+            const enrichedData = { ...examData, questions: enrichedQuestions };
+            setResultData(enrichedData);
+            setRawJson(JSON.stringify(enrichedData, null, 2));
           }
+        } catch (explainErr) {
+          console.warn("Auto-enrichment skipped:", explainErr);
         }
       } else {
         throw new Error(
@@ -340,29 +336,14 @@ export default function Home() {
             </div>
           )}
 
-          {/* Optional Gemini API Key bar for instant academic explanation synthesis */}
+          {/* Active Explanations Indicator */}
           <div className="api-key-inline-bar">
-            <Key className="w-4 h-4 text-black flex-shrink-0" />
-            <span className="api-key-inline-label">Gemini API Key (optional):</span>
-            <input
-              type="password"
-              placeholder="Paste Google Gemini Key to write deep academic explanations..."
-              value={apiKey}
-              onChange={(e) => handleSaveApiKey(e.target.value)}
-              className="api-key-inline-input"
-            />
-            {apiKey ? (
-              <span className="api-key-active-badge">✓ Explanations Active</span>
-            ) : (
-              <a
-                href="https://aistudio.google.com/app/apikey"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="api-key-get-link"
-              >
-                Get Free Key
-              </a>
-            )}
+            <Sparkles className="w-4 h-4 text-black flex-shrink-0" />
+            <span className="api-key-inline-label">Teacher Explanations:</span>
+            <span className="api-key-active-badge">✓ Active for All Users</span>
+            <span style={{ fontSize: "12px", color: "var(--muted-foreground)" }}>
+              Scientific explanations generated automatically without mentioning marking scheme.
+            </span>
           </div>
 
           {/* Action Trigger Button */}
@@ -425,13 +406,7 @@ export default function Home() {
               <div className="results-quick-actions">
                 <button
                   id="enrich-explanations-btn"
-                  onClick={() => {
-                    if (!apiKey) {
-                      setIsKeyModalOpen(true);
-                    } else {
-                      handleEnrichExplanations(resultData);
-                    }
-                  }}
+                  onClick={() => handleEnrichExplanations(resultData)}
                   disabled={isExplaining}
                   className="btn-action-ghost"
                   title="Generate detailed teacher explanations for verified answers without altering questions or answers"

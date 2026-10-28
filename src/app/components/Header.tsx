@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { GraduationCap, Sparkles, Key } from "lucide-react";
+import { GraduationCap, Sparkles, CheckCircle2 } from "lucide-react";
 
 interface HeaderProps {
   apiKey?: string;
@@ -9,7 +9,7 @@ interface HeaderProps {
 }
 
 export default function Header({ apiKey, onOpenApiKeyModal }: HeaderProps) {
-  const isKeySet = Boolean(apiKey && apiKey.trim().length > 0);
+  const isCustomKey = Boolean(apiKey && apiKey.trim().length > 0);
 
   return (
     <header className="header-container">
@@ -35,21 +35,15 @@ export default function Header({ apiKey, onOpenApiKeyModal }: HeaderProps) {
             <span>Direct PDF Parser</span>
           </div>
 
-          {onOpenApiKeyModal && (
-            <button
-              type="button"
-              onClick={onOpenApiKeyModal}
-              className={`api-key-header-btn ${isKeySet ? "configured" : "needed"}`}
-              title={
-                isKeySet
-                  ? "AI Explanation Key is active. Click to edit."
-                  : "Click to add your Gemini API Key for deep teacher explanations"
-              }
-            >
-              <Key className="w-3.5 h-3.5" />
-              <span>{isKeySet ? "AI Explanations Active" : "Add AI Explanations Key"}</span>
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={onOpenApiKeyModal}
+            className="api-key-header-btn configured"
+            title="Scientific conceptual explanations are enabled for all users. Click if you wish to configure a custom Gemini key."
+          >
+            <CheckCircle2 className="w-3.5 h-3.5 text-black" />
+            <span>{isCustomKey ? "Custom Key Active" : "AI Explanations Ready"}</span>
+          </button>
         </div>
       </div>
     </header>

@@ -1,22 +1,57 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 
+// Default key loaded from environment variable GEMINI_API_KEY (set in Vercel dashboard / .env.local)
+const DEFAULT_GEMINI_KEY = process.env.GEMINI_API_KEY || "";
+
+const CANDIDATE_MODELS = [
+  "gemini-3.5-flash-lite",
+  "gemini-3.5-flash",
+  "gemini-3.7-flash",
+  "gemini-3.8-flash",
+  "gemini-3.1-flash-lite",
+  "gemini-flash-latest",
+];
+
+async function generateWithFallback(ai: GoogleGenAI, prompt: string): Promise<string> {
+  let lastError: any = null;
+
+  for (const model of CANDIDATE_MODELS) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          config: {
+            responseMimeType: "application/json",
+            temperature: 0.2,
+          },
+        });
+        if (response.text) {
+          return response.text;
+        }
+      } catch (err: any) {
+        lastError = err;
+        // If 503 (high demand), short pause then retry or switch model
+        if (attempt < 2 && err?.message?.includes("503")) {
+          await new Promise((res) => setTimeout(res, 800));
+        }
+      }
+    }
+  }
+
+  throw lastError || new Error("Failed to generate explanations with available AI models.");
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const { questions, subject, apiKey } = body;
 
-    const activeKey = (apiKey as string)?.trim() || process.env.GEMINI_API_KEY || "";
-    if (!activeKey) {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            "Google Gemini API key is required to generate AI explanations. You can get a free key at aistudio.google.com and enter it in the top-right settings.",
-        },
-        { status: 400 }
-      );
-    }
+    const activeKey =
+      (apiKey as string)?.trim() ||
+      process.env.GEMINI_API_KEY ||
+      DEFAULT_GEMINI_KEY;
 
     if (!Array.isArray(questions) || questions.length === 0) {
       return NextResponse.json(
@@ -27,7 +62,8 @@ export async function POST(req: NextRequest) {
 
     const ai = new GoogleGenAI({ apiKey: activeKey });
 
-    // Prepare lightweight prompt: only question number, question text, options, and verified answer
+    // Ensure we ONLY supply question number, text, options, and the verified correct answer.
+    // The question number and answer mapping are strictly fixed and immutable.
     const promptQuestions = questions.map((q: any) => ({
       number: q.number,
       question: q.question,
@@ -41,42 +77,19 @@ You are provided with a verified list of exam questions, multiple-choice options
 Your task is to write a rigorous, high-quality, 1-3 sentence academic and conceptual explanation for each question explaining WHY that specific answer is scientifically/conceptually correct.
 
 STRICT CONSTRAINTS:
-1. NEVER mention "the marking scheme", "mark scheme", "the answer key", or "the official answer". Write as an authoritative teacher explaining the concept, formulas, calculations, or underlying scientific principles directly.
-2. Address the concept directly. For example: "Work is a scalar quantity because it is defined as the product of force and displacement, having magnitude only without directional dependence. In contrast, force, momentum, and velocity all possess both magnitude and direction, making them vector quantities."
-3. Do NOT change any question number or correct answer. The mapping is fixed.
-4. Return ONLY a pure JSON object where each key is the string question number and the value is the explanation string:
+1. NEVER mention "the marking scheme", "mark scheme", "the answer key", "the official answer", "verified by", or "marking guide". Write as an authoritative teacher explaining the underlying concepts, definitions, formulas, calculations, or physical/biological/chemical laws directly.
+2. Address why the verified answer is correct and why other key concepts differentiate it.
+3. Return ONLY a pure JSON object where each key is the string question number and the value is the explanation string:
 {
   "1": "Explanation for question 1...",
   "2": "Explanation for question 2..."
 }
-5. Output valid JSON only, without markdown fences or any other commentary.
+4. Output valid JSON only, without markdown code fences or any other commentary.
 
-Questions to explain:
+Questions:
 ${JSON.stringify(promptQuestions, null, 2)}`;
 
-    let responseText = "";
-    try {
-      const response = await ai.models.generateContent({
-        model: "gemini-2.0-flash",
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        config: {
-          responseMimeType: "application/json",
-          temperature: 0.2,
-        },
-      });
-      responseText = response.text || "";
-    } catch (err: any) {
-      console.warn("Retrying with gemini-1.5-flash:", err?.message);
-      const response = await ai.models.generateContent({
-        model: "gemini-1.5-flash",
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        config: {
-          responseMimeType: "application/json",
-          temperature: 0.2,
-        },
-      });
-      responseText = response.text || "";
-    }
+    const responseText = await generateWithFallback(ai, prompt);
 
     let parsedExplanations: Record<string, string> = {};
     try {
@@ -106,4 +119,3 @@ ${JSON.stringify(promptQuestions, null, 2)}`;
     );
   }
 }
-
