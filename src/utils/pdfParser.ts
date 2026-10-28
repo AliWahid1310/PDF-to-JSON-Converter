@@ -1,9 +1,195 @@
 import { extractText } from "unpdf";
 import { ExamMergedJson, QuestionItem } from "@/types/exam";
 
+/**
+ * Map Adobe Symbol Font / Windows TrueType Private Use Area (U+F000 - U+F0FF)
+ * and related mathematical/scientific glyphs to their standard Unicode equivalents.
+ */
+const SYMBOL_FONT_MAP: Record<string, string> = {
+  // PUA mapped ASCII / Latin range
+  "\uF020": " ",
+  "\uF021": "!",
+  "\uF022": "∀",
+  "\uF023": "#",
+  "\uF024": "∃",
+  "\uF025": "%",
+  "\uF026": "&",
+  "\uF027": "∋",
+  "\uF028": "(",
+  "\uF029": ")",
+  "\uF02A": "∗",
+  "\uF02B": "+",
+  "\uF02C": ",",
+  "\uF02D": "−",
+  "\uF02E": ".",
+  "\uF02F": "/",
+  "\uF030": "0",
+  "\uF031": "1",
+  "\uF032": "2",
+  "\uF033": "3",
+  "\uF034": "4",
+  "\uF035": "5",
+  "\uF036": "6",
+  "\uF037": "7",
+  "\uF038": "8",
+  "\uF039": "9",
+  "\uF03A": ":",
+  "\uF03B": ";",
+  "\uF03C": "<",
+  "\uF03D": "=",
+  "\uF03E": ">",
+  "\uF03F": "?",
+  "\uF040": "≅",
+  // Greek Capitals
+  "\uF041": "Α",
+  "\uF042": "Β",
+  "\uF043": "Χ",
+  "\uF044": "Δ",
+  "\uF045": "Ε",
+  "\uF046": "Φ",
+  "\uF047": "Γ",
+  "\uF048": "Η",
+  "\uF049": "Ι",
+  "\uF04A": "ϑ",
+  "\uF04B": "Κ",
+  "\uF04C": "Λ",
+  "\uF04D": "Μ",
+  "\uF04E": "Ν",
+  "\uF04F": "Ο",
+  "\uF050": "Π",
+  "\uF051": "Θ",
+  "\uF052": "Ρ",
+  "\uF053": "Σ",
+  "\uF054": "Τ",
+  "\uF055": "Υ",
+  "\uF056": "ς",
+  "\uF057": "Ω",
+  "\uF058": "Ξ",
+  "\uF059": "Ψ",
+  "\uF05A": "Ζ",
+  "\uF05B": "[",
+  "\uF05C": "∴",
+  "\uF05D": "]",
+  "\uF05E": "⊥",
+  "\uF05F": "_",
+  "\uF060": "¯",
+  // Greek Lowercase
+  "\uF061": "α",
+  "\uF062": "β",
+  "\uF063": "χ",
+  "\uF064": "δ",
+  "\uF065": "ε",
+  "\uF066": "ϕ",
+  "\uF067": "γ",
+  "\uF068": "η",
+  "\uF069": "ι",
+  "\uF06A": "φ",
+  "\uF06B": "κ",
+  "\uF06C": "λ",
+  "\uF06D": "μ",
+  "\uF06E": "ν",
+  "\uF06F": "ο",
+  "\uF070": "π",
+  "\uF071": "θ",
+  "\uF072": "ρ",
+  "\uF073": "σ",
+  "\uF074": "τ",
+  "\uF075": "υ",
+  "\uF076": "ϖ",
+  "\uF077": "ω",
+  "\uF078": "ξ",
+  "\uF079": "ψ",
+  "\uF07A": "ζ",
+  "\uF07B": "{",
+  "\uF07C": "|",
+  "\uF07D": "}",
+  "\uF07E": "~",
+  // Upper Symbols & Math Operators
+  "\uF0A0": " ",
+  "\uF0A1": "ϒ",
+  "\uF0A2": "′",
+  "\uF0A3": "≤",
+  "\uF0A4": "⁄",
+  "\uF0A5": "∞",
+  "\uF0A6": "ƒ",
+  "\uF0A7": "♣",
+  "\uF0A8": "♦",
+  "\uF0A9": "♥",
+  "\uF0AA": "♠",
+  "\uF0AB": "↔",
+  "\uF0AC": "←",
+  "\uF0AD": "↑",
+  "\uF0AE": "→",
+  "\uF0AF": "↓",
+  "\uF0B0": "°",
+  "\uF0B1": "±",
+  "\uF0B2": "″",
+  "\uF0B3": "≥",
+  "\uF0B4": "×",
+  "\uF0B5": "∝",
+  "\uF0B6": "∂",
+  "\uF0B7": "•",
+  "\uF0B8": "÷",
+  "\uF0B9": "≠",
+  "\uF0BA": "≡",
+  "\uF0BB": "≈",
+  "\uF0BC": "…",
+  "\uF0BD": "|",
+  "\uF0BE": "−",
+  "\uF0BF": "↵",
+  "\uF0C0": "ℵ",
+  "\uF0C1": "ℑ",
+  "\uF0C2": "ℜ",
+  "\uF0C3": "℘",
+  "\uF0C4": "⊗",
+  "\uF0C5": "⊕",
+  "\uF0C6": "∅",
+  "\uF0C7": "∩",
+  "\uF0C8": "∪",
+  "\uF0C9": "⊃",
+  "\uF0CA": "⊇",
+  "\uF0CB": "⊄",
+  "\uF0CC": "⊂",
+  "\uF0CD": "⊆",
+  "\uF0CE": "∈",
+  "\uF0CF": "∉",
+  "\uF0D0": "∠",
+  "\uF0D1": "∇",
+  "\uF0D2": "®",
+  "\uF0D3": "©",
+  "\uF0D4": "™",
+  "\uF0D5": "∏",
+  "\uF0D6": "√",
+  "\uF0D7": "⋅",
+  "\uF0D8": "¬",
+  "\uF0D9": "∧",
+  "\uF0DA": "∨",
+  "\uF0DB": "⇔",
+  "\uF0DC": "⇐",
+  "\uF0DD": "⇒",
+  "\uF0DE": "⇑",
+  "\uF0DF": "⇓",
+  "\uF0E0": "◊",
+  "\uF0E1": "⟨",
+  "\uF0E2": "⟩",
+  "\uF0E5": "∑",
+  "\uF0F0": "€",
+  "\uF0F2": "∫",
+};
+
+export function normalizeSymbols(text: string): string {
+  if (!text) return "";
+  return text.replace(/[\uF000-\uF0FF]/g, (ch) => {
+    if (SYMBOL_FONT_MAP[ch]) return SYMBOL_FONT_MAP[ch];
+    const code = ch.charCodeAt(0) - 0xf000;
+    if (code >= 0x20 && code <= 0x7e) return String.fromCharCode(code);
+    return "";
+  });
+}
+
 function stripArtifacts(text: string): string {
   if (!text) return "";
-  return text
+  return normalizeSymbols(text)
     // PapaCambridge watermarks & download banners
     .replace(/PapaCambridge[^\n]*/gi, "")
     .replace(/papacambridge\.com[^\n]*/gi, "")
@@ -40,7 +226,7 @@ function stripArtifacts(text: string): string {
 
 function cleanText(t: string): string {
   if (!t) return "";
-  return stripArtifacts(t)
+  return normalizeSymbols(stripArtifacts(t))
     .replace(/[\t\r]+/g, " ")
     .replace(/[ ]{2,}/g, " ")
     .replace(/\s*\n\s*/g, "\n")
@@ -168,13 +354,15 @@ export async function parseExamPdfs(
 ): Promise<ExamMergedJson> {
   // 1. Extract text from Marking Scheme using unpdf
   const msResult = await extractText(new Uint8Array(msBuffer));
-  const msPages = Array.isArray(msResult.text) ? msResult.text : [msResult.text || ""];
+  const rawMsPages = Array.isArray(msResult.text) ? msResult.text : [msResult.text || ""];
+  const msPages = rawMsPages.map((p) => normalizeSymbols(p));
   const msFullText = msPages.join("\n");
   const answersMap = parseMarkingScheme(msFullText);
 
   // 2. Extract text from Question Paper using unpdf
   const qpResult = await extractText(new Uint8Array(qpBuffer));
-  const qpPages = Array.isArray(qpResult.text) ? qpResult.text : [qpResult.text || ""];
+  const rawQpPages = Array.isArray(qpResult.text) ? qpResult.text : [qpResult.text || ""];
+  const qpPages = rawQpPages.map((p) => normalizeSymbols(p));
 
   const meta = parseExamMetadata(
     qpPages.length > 0 ? qpPages[0] : "",
