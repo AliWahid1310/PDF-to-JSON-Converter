@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useRef, useState } from "react";
-import { UploadCloud, FileText, CheckCircle2, X, AlertCircle, ArrowLeftRight } from "lucide-react";
+import { UploadCloud, FileText, CheckCircle2, X, AlertCircle } from "lucide-react";
 
 interface UnifiedDropzoneProps {
   questionPaper: File | null;
@@ -147,11 +147,6 @@ export default function UnifiedDropzone({
     onFilesDetected(questionPaper, null);
   };
 
-  const handleSwapRoles = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    onFilesDetected(markingScheme, questionPaper);
-  };
-
   const hasFiles = Boolean(questionPaper || markingScheme);
   const bothReady = Boolean(questionPaper && markingScheme);
 
@@ -295,17 +290,6 @@ export default function UnifiedDropzone({
 
             {/* Bottom bar of unified list */}
             <div className="unified-actions-bar">
-              {bothReady && (
-                <button
-                  type="button"
-                  className="unified-swap-btn"
-                  onClick={handleSwapRoles}
-                  title="Swap QP and MS roles if misdetected"
-                >
-                  <ArrowLeftRight className="w-3.5 h-3.5" />
-                  <span>Swap Roles</span>
-                </button>
-              )}
               <button
                 type="button"
                 className="unified-add-more-btn"

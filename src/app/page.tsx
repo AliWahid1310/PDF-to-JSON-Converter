@@ -4,7 +4,6 @@ import React, { useState, useEffect } from "react";
 import Header from "./components/Header";
 import UnifiedDropzone from "./components/UnifiedDropzone";
 import JsonViewer from "./components/JsonViewer";
-import ApiKeyModal from "./components/ApiKeyModal";
 import { ExamMergedJson, GenerateApiResponse } from "@/types/exam";
 import { downloadJson, formatExamFilename } from "@/utils/download";
 import {
@@ -21,7 +20,6 @@ import {
   Clock,
   Layers,
   GraduationCap,
-  Key
 } from "lucide-react";
 
 import { parseExamPdfs } from "@/utils/pdfParser";
@@ -30,9 +28,8 @@ export default function Home() {
   const [questionPaper, setQuestionPaper] = useState<File | null>(null);
   const [markingScheme, setMarkingScheme] = useState<File | null>(null);
 
-  // Gemini API Key for deep AI teacher explanations
+  // Optional saved custom Gemini API Key
   const [apiKey, setApiKey] = useState<string>("");
-  const [isKeyModalOpen, setIsKeyModalOpen] = useState(false);
   const [isExplaining, setIsExplaining] = useState(false);
 
   // Loading and Progress states
@@ -46,7 +43,7 @@ export default function Home() {
 
   const [copiedQuick, setCopiedQuick] = useState(false);
 
-  // Retrieve saved API key
+  // Retrieve saved API key if present
   useEffect(() => {
     try {
       const saved = localStorage.getItem("markcraft_gemini_key");
@@ -55,24 +52,6 @@ export default function Home() {
       // ignore
     }
   }, []);
-
-  const handleSaveApiKey = (key: string) => {
-    setApiKey(key);
-    try {
-      if (key) {
-        localStorage.setItem("markcraft_gemini_key", key);
-      } else {
-        localStorage.removeItem("markcraft_gemini_key");
-      }
-    } catch {
-      // ignore
-    }
-
-    // If an exam is already loaded, automatically synthesize explanations with the newly added key!
-    if (key && resultData) {
-      handleEnrichExplanations(resultData, key);
-    }
-  };
 
   // Dedicated function to synthesize teacher explanations WITHOUT touching any question/answer mapping
   const handleEnrichExplanations = async (targetData?: ExamMergedJson | null, customKey?: string) => {
@@ -134,6 +113,8 @@ export default function Home() {
 
     setIsLoading(true);
     setErrorMessage(null);
+    setResultData(null);
+    setRawJson("");
     setProgressStep(1);
 
     const stepTimer1 = setTimeout(() => setProgressStep(2), 500);
@@ -195,11 +176,10 @@ export default function Home() {
       }
 
       if (examData) {
-        setResultData(examData);
-        setRawJson(JSON.stringify(examData, null, 2));
-
         // 3. Automatically synthesize high-accuracy teacher explanations for all users!
-        setProgressStep(4);
+        // We DO NOT show results yet — wait until explanations are also ready.
+        setProgressStep(3);
+        let finalData = examData;
         try {
           const explainRes = await fetch("/api/explain", {
             method: "POST",
@@ -219,13 +199,16 @@ export default function Home() {
               explanation:
                 explainJson.explanations[String(q.number)] || q.explanation,
             }));
-            const enrichedData = { ...examData, questions: enrichedQuestions };
-            setResultData(enrichedData);
-            setRawJson(JSON.stringify(enrichedData, null, 2));
+            finalData = { ...examData, questions: enrichedQuestions };
           }
         } catch (explainErr) {
           console.warn("Auto-enrichment skipped:", explainErr);
         }
+
+        setProgressStep(4);
+        // NOW display everything at once (mapping + explanations)
+        setResultData(finalData);
+        setRawJson(JSON.stringify(finalData, null, 2));
       } else {
         throw new Error(
           "Could not detect questions in the uploaded Question Paper. Please ensure the PDF has selectable text."
@@ -276,7 +259,7 @@ export default function Home() {
   return (
     <div className="app-container">
       {/* Header */}
-      <Header apiKey={apiKey} onOpenApiKeyModal={() => setIsKeyModalOpen(true)} />
+      <Header />
 
       <main className="main-content">
         {/* Hero Section */}
@@ -336,16 +319,6 @@ export default function Home() {
             </div>
           )}
 
-          {/* Active Explanations Indicator */}
-          <div className="api-key-inline-bar">
-            <Sparkles className="w-4 h-4 text-black flex-shrink-0" />
-            <span className="api-key-inline-label">Teacher Explanations:</span>
-            <span className="api-key-active-badge">✓ Active for All Users</span>
-            <span style={{ fontSize: "12px", color: "var(--muted-foreground)" }}>
-              Scientific explanations generated automatically without mentioning marking scheme.
-            </span>
-          </div>
-
           {/* Action Trigger Button */}
           <div className="action-row">
             {(questionPaper || markingScheme || resultData) && (
@@ -404,26 +377,6 @@ export default function Home() {
               </div>
 
               <div className="results-quick-actions">
-                <button
-                  id="enrich-explanations-btn"
-                  onClick={() => handleEnrichExplanations(resultData)}
-                  disabled={isExplaining}
-                  className="btn-action-ghost"
-                  title="Generate detailed teacher explanations for verified answers without altering questions or answers"
-                >
-                  {isExplaining ? (
-                    <>
-                      <RefreshCw className="w-4 h-4 animate-spin text-yellow-accent" />
-                      <span>Writing Explanations...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="w-4 h-4 text-yellow-accent" />
-                      <span>Enrich Explanations</span>
-                    </>
-                  )}
-                </button>
-
                 <button
                   id="quick-copy-btn"
                   onClick={handleQuickCopy}
@@ -508,44 +461,6 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Explanation Synthesis Callout if not yet enriched */}
-            {resultData.questions?.[0]?.explanation?.startsWith("Correct option is") && (
-              <div className="explanation-callout-card">
-                <div className="explanation-callout-text">
-                  <Sparkles className="w-5 h-5 text-yellow-accent flex-shrink-0" />
-                  <div>
-                    <h4 className="font-bold text-sm text-black">
-                      Want conceptual explanations for why each answer is correct?
-                    </h4>
-                    <p className="text-xs text-zinc-600">
-                      Questions and verified answers remain locked. Generate scientific explanations without altering any answers.
-                    </p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!apiKey) setIsKeyModalOpen(true);
-                    else handleEnrichExplanations(resultData);
-                  }}
-                  disabled={isExplaining}
-                  className="btn-action-solid"
-                >
-                  {isExplaining ? (
-                    <>
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                      <span>Writing Explanations...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="w-4 h-4" />
-                      <span>Generate Concept Explanations</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            )}
-
             {/* JSON Output */}
             <JsonViewer
               jsonString={rawJson}
@@ -561,14 +476,6 @@ export default function Home() {
           Learningscapes Academy Teacher Suite • Precision Exam &amp; Marking Scheme JSON Extraction
         </p>
       </footer>
-
-      {/* AI Key Settings Modal */}
-      <ApiKeyModal
-        isOpen={isKeyModalOpen}
-        apiKey={apiKey}
-        onClose={() => setIsKeyModalOpen(false)}
-        onSave={handleSaveApiKey}
-      />
     </div>
   );
 }
