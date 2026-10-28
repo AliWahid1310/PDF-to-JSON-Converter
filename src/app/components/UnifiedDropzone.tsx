@@ -12,14 +12,38 @@ interface UnifiedDropzoneProps {
 function detectRole(file: File): "qp" | "ms" | "unknown" {
   const name = file.name.toLowerCase();
 
-  // 1. Check delimiter/token-bounded matches first (e.g. _qp_, -qp-, qp., "qp ", _ms_, -ms-, ms.)
-  const isQpToken = /(?:^|[^a-z0-9])(qp|question[-_\s]?paper)(?:[^a-z0-9]|$)/i.test(name);
-  const isMsToken = /(?:^|[^a-z0-9])(ms|mark(?:ing)?[-_\s]?scheme)(?:[^a-z0-9]|$)/i.test(name);
+  // 1. Explicit phrase matches: "question paper", "marking scheme", "mark scheme"
+  const isQuestionPaperPhrase =
+    name.includes("question paper") ||
+    name.includes("question_paper") ||
+    name.includes("question-paper") ||
+    name.includes("questionpaper") ||
+    name.includes("question papers") ||
+    name.includes("question_papers");
+
+  const isMarkingSchemePhrase =
+    name.includes("marking scheme") ||
+    name.includes("marking_scheme") ||
+    name.includes("marking-scheme") ||
+    name.includes("markingscheme") ||
+    name.includes("mark scheme") ||
+    name.includes("mark_scheme") ||
+    name.includes("mark-scheme") ||
+    name.includes("markscheme") ||
+    name.includes("marking schemes") ||
+    name.includes("marking_schemes");
+
+  if (isQuestionPaperPhrase && !isMarkingSchemePhrase) return "qp";
+  if (isMarkingSchemePhrase && !isQuestionPaperPhrase) return "ms";
+
+  // 2. Token / word boundary matches (e.g. _qp_, -qp-, qp., "qp ", _ms_, -ms-, ms.)
+  const isQpToken = /(?:^|[^a-z0-9])(qp)(?:[^a-z0-9]|$)/i.test(name);
+  const isMsToken = /(?:^|[^a-z0-9])(ms)(?:[^a-z0-9]|$)/i.test(name);
 
   if (isQpToken && !isMsToken) return "qp";
   if (isMsToken && !isQpToken) return "ms";
 
-  // 2. Fallback to unambiguous substring match
+  // 3. Fallback substring match if unambiguous
   const hasQp = name.includes("qp");
   const hasMs = name.includes("ms");
   if (hasQp && !hasMs) return "qp";
@@ -72,7 +96,7 @@ export default function UnifiedDropzone({
           newMs = pdf;
         } else {
           setErrorMsg(
-            `Could not auto-detect "${pdf.name}". Please ensure the filename contains "qp" or "ms".`
+            `Could not auto-detect "${pdf.name}". Please ensure the filename contains "Question Paper" / "qp" or "Marking Scheme" / "ms".`
           );
         }
       }
@@ -155,7 +179,7 @@ export default function UnifiedDropzone({
       </div>
 
       <p className="dropzone-desc">
-        Select or drop both PDFs into this single box. Our system auto-detects files containing <strong>&quot;qp&quot;</strong> as Question Papers and <strong>&quot;ms&quot;</strong> as Marking Schemes.
+        Select or drop both PDFs into this single box. Our system auto-detects files containing <strong>&quot;Question Paper&quot;</strong> or <strong>&quot;qp&quot;</strong> as Question Papers, and <strong>&quot;Marking Scheme&quot;</strong> or <strong>&quot;ms&quot;</strong> as Marking Schemes.
       </p>
 
       <div
@@ -186,7 +210,7 @@ export default function UnifiedDropzone({
               <span className="upload-cta">Click to browse</span> or drag &amp; drop both PDFs here
             </div>
             <p className="upload-hint">
-              Drop both files at once • Filenames with &quot;qp&quot; and &quot;ms&quot; are automatically identified
+              Drop both files at once • Filenames with &quot;Question Paper&quot; / &quot;qp&quot; and &quot;Marking Scheme&quot; / &quot;ms&quot; are automatically identified
             </p>
           </div>
         ) : (
