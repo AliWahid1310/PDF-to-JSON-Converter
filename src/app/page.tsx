@@ -4,6 +4,7 @@ import React, { useState, useEffect } from "react";
 import Header from "./components/Header";
 import UnifiedDropzone from "./components/UnifiedDropzone";
 import JsonViewer from "./components/JsonViewer";
+import ApiKeyModal from "./components/ApiKeyModal";
 import { ExamMergedJson, GenerateApiResponse } from "@/types/exam";
 import { downloadJson, formatExamFilename } from "@/utils/download";
 import {
@@ -28,6 +29,11 @@ export default function Home() {
   const [questionPaper, setQuestionPaper] = useState<File | null>(null);
   const [markingScheme, setMarkingScheme] = useState<File | null>(null);
 
+  // Gemini API Key for deep AI teacher explanations
+  const [apiKey, setApiKey] = useState<string>("");
+  const [isKeyModalOpen, setIsKeyModalOpen] = useState(false);
+  const [isExplaining, setIsExplaining] = useState(false);
+
   // Loading and Progress states
   const [isLoading, setIsLoading] = useState(false);
   const [progressStep, setProgressStep] = useState<number>(0);
@@ -39,6 +45,90 @@ export default function Home() {
 
   const [copiedQuick, setCopiedQuick] = useState(false);
 
+  // Retrieve saved API key
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("markcraft_gemini_key");
+      if (saved) setApiKey(saved);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const handleSaveApiKey = (key: string) => {
+    setApiKey(key);
+    try {
+      if (key) {
+        localStorage.setItem("markcraft_gemini_key", key);
+      } else {
+        localStorage.removeItem("markcraft_gemini_key");
+      }
+    } catch {
+      // ignore
+    }
+
+    // If an exam is already loaded, automatically synthesize explanations with the newly added key!
+    if (key && resultData) {
+      handleEnrichExplanations(resultData, key);
+    }
+  };
+
+  // Dedicated function to synthesize teacher explanations WITHOUT touching any question/answer mapping
+  const handleEnrichExplanations = async (targetData?: ExamMergedJson | null, customKey?: string) => {
+    const dataToEnrich = targetData || resultData;
+    if (!dataToEnrich || !dataToEnrich.questions || dataToEnrich.questions.length === 0) {
+      return;
+    }
+
+    const keyToUse = customKey || apiKey;
+    if (!keyToUse) {
+      setIsKeyModalOpen(true);
+      return;
+    }
+
+    setIsExplaining(true);
+    setErrorMessage(null);
+
+    try {
+      const res = await fetch("/api/explain", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          questions: dataToEnrich.questions,
+          subject: dataToEnrich.subject,
+          apiKey: keyToUse,
+        }),
+      });
+
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        throw new Error(json.error || "Failed to generate AI explanations.");
+      }
+
+      if (json.explanations) {
+        // STRICT RULE: Update ONLY the explanation field by question number.
+        // number, question, options, correctAnswer, and marks remain completely untouched.
+        const enrichedQuestions = dataToEnrich.questions.map((q) => ({
+          ...q,
+          explanation: json.explanations[String(q.number)] || q.explanation,
+        }));
+
+        const enrichedExamData: ExamMergedJson = {
+          ...dataToEnrich,
+          questions: enrichedQuestions,
+        };
+
+        setResultData(enrichedExamData);
+        setRawJson(JSON.stringify(enrichedExamData, null, 2));
+      }
+    } catch (err: any) {
+      console.error(err);
+      setErrorMessage(err.message || "Could not synthesize AI explanations. Check your API key.");
+    } finally {
+      setIsExplaining(false);
+    }
+  };
+
   const handleGenerate = async () => {
     if (!questionPaper || !markingScheme) {
       setErrorMessage("Please upload both the Question Paper and the Marking Scheme PDF.");
@@ -49,15 +139,13 @@ export default function Home() {
     setErrorMessage(null);
     setProgressStep(1);
 
-    const stepTimer1 = setTimeout(() => setProgressStep(2), 600);
-    const stepTimer2 = setTimeout(() => setProgressStep(3), 1200);
+    const stepTimer1 = setTimeout(() => setProgressStep(2), 500);
+    const stepTimer2 = setTimeout(() => setProgressStep(3), 1000);
 
     try {
       const targetPdfUrl = questionPaper.name || "exam.pdf";
 
-      // 1. Try parsing directly in the browser (client-side) first.
-      // This completely eliminates Vercel's 4.5MB serverless payload limit (HTTP 413 Request Entity Too Large),
-      // allowing files of any size (such as large papers with diagrams) to be parsed instantly and privately.
+      // 1. Direct PDF parsing in the browser (client-side)
       let examData: ExamMergedJson | null = null;
       let clientParseError: string | null = null;
 
@@ -73,7 +161,7 @@ export default function Home() {
         clientParseError = err?.message;
       }
 
-      // 2. If client-side parse did not produce questions, fallback to /api/generate
+      // 2. Fallback to /api/generate if needed
       if (!examData) {
         const formData = new FormData();
         formData.append("questionPaper", questionPaper);
@@ -112,6 +200,35 @@ export default function Home() {
       if (examData) {
         setResultData(examData);
         setRawJson(JSON.stringify(examData, null, 2));
+
+        // 3. If API key is available, automatically synthesize deep explanations!
+        if (apiKey) {
+          setProgressStep(4);
+          try {
+            const explainRes = await fetch("/api/explain", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                questions: examData.questions,
+                subject: examData.subject,
+                apiKey,
+              }),
+            });
+            const explainJson = await explainRes.json();
+            if (explainJson.success && explainJson.explanations) {
+              const enrichedQuestions = examData.questions.map((q) => ({
+                ...q,
+                explanation:
+                  explainJson.explanations[String(q.number)] || q.explanation,
+              }));
+              const enrichedData = { ...examData, questions: enrichedQuestions };
+              setResultData(enrichedData);
+              setRawJson(JSON.stringify(enrichedData, null, 2));
+            }
+          } catch (explainErr) {
+            console.warn("Auto-enrichment skipped:", explainErr);
+          }
+        }
       } else {
         throw new Error(
           "Could not detect questions in the uploaded Question Paper. Please ensure the PDF has selectable text."
@@ -162,7 +279,7 @@ export default function Home() {
   return (
     <div className="app-container">
       {/* Header */}
-      <Header />
+      <Header apiKey={apiKey} onOpenApiKeyModal={() => setIsKeyModalOpen(true)} />
 
       <main className="main-content">
         {/* Hero Section */}
@@ -281,6 +398,32 @@ export default function Home() {
 
               <div className="results-quick-actions">
                 <button
+                  id="enrich-explanations-btn"
+                  onClick={() => {
+                    if (!apiKey) {
+                      setIsKeyModalOpen(true);
+                    } else {
+                      handleEnrichExplanations(resultData);
+                    }
+                  }}
+                  disabled={isExplaining}
+                  className="btn-action-ghost"
+                  title="Generate detailed teacher explanations for verified answers without altering questions or answers"
+                >
+                  {isExplaining ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin text-yellow-accent" />
+                      <span>Writing Explanations...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-4 h-4 text-yellow-accent" />
+                      <span>Enrich Explanations</span>
+                    </>
+                  )}
+                </button>
+
+                <button
                   id="quick-copy-btn"
                   onClick={handleQuickCopy}
                   className="btn-action-ghost"
@@ -379,6 +522,14 @@ export default function Home() {
           Learningscapes Academy Teacher Suite • Precision Exam &amp; Marking Scheme JSON Extraction
         </p>
       </footer>
+
+      {/* AI Key Settings Modal */}
+      <ApiKeyModal
+        isOpen={isKeyModalOpen}
+        apiKey={apiKey}
+        onClose={() => setIsKeyModalOpen(false)}
+        onSave={handleSaveApiKey}
+      />
     </div>
   );
 }

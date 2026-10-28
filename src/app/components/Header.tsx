@@ -1,9 +1,16 @@
 "use client";
 
 import React from "react";
-import { GraduationCap, Sparkles } from "lucide-react";
+import { GraduationCap, Sparkles, Key } from "lucide-react";
 
-export default function Header() {
+interface HeaderProps {
+  apiKey?: string;
+  onOpenApiKeyModal?: () => void;
+}
+
+export default function Header({ apiKey, onOpenApiKeyModal }: HeaderProps) {
+  const isKeySet = Boolean(apiKey && apiKey.trim().length > 0);
+
   return (
     <header className="header-container">
       <div className="header-inner">
@@ -27,6 +34,22 @@ export default function Header() {
             <Sparkles className="w-3.5 h-3.5 text-black" />
             <span>Direct PDF Parser</span>
           </div>
+
+          {onOpenApiKeyModal && (
+            <button
+              type="button"
+              onClick={onOpenApiKeyModal}
+              className={`api-key-header-btn ${isKeySet ? "configured" : "needed"}`}
+              title={
+                isKeySet
+                  ? "AI Explanation Key is active. Click to edit."
+                  : "Click to add your Gemini API Key for deep teacher explanations"
+              }
+            >
+              <Key className="w-3.5 h-3.5" />
+              <span>{isKeySet ? "AI Explanations Active" : "Add AI Explanations Key"}</span>
+            </button>
+          )}
         </div>
       </div>
     </header>

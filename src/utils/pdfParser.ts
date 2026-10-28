@@ -180,11 +180,9 @@ export async function parseExamPdfs(
     const msData = answersMap.get(current.num) || { answer: "", marks: 1 };
     const ansLetter = msData.answer || "";
 
-    // Construct concise teacher explanation
-    let explanation = `According to the official marking scheme, the correct answer for Question ${current.num} is option ${ansLetter || "verified in marking key"}.`;
-    if (options && ansLetter && options[ansLetter]) {
-      explanation += ` (${options[ansLetter]}).`;
-    }
+    // Construct baseline teacher explanation
+    const optText = options && ansLetter && options[ansLetter] ? ` (${options[ansLetter]})` : "";
+    const explanation = `Option ${ansLetter}${optText} is verified as the correct answer in the official marking scheme.`;
 
     questions.push({
       number: current.num,
