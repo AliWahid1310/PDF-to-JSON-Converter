@@ -6,6 +6,9 @@ import { GraduationCap, Sparkles } from "lucide-react";
 export default function Header() {
   return (
     <header className="header-container">
+      <div className="w-full bg-[#fef9c3] border-b border-[#fde047] py-1.5 px-4 text-center text-xs sm:text-sm font-semibold text-[#713f12] tracking-wide flex items-center justify-center gap-1.5">
+        <span>Anyone who uses this software owes me a coffee. — Ali ☕</span>
+      </div>
       <div className="header-inner">
         <div className="brand-group">
           <div className="brand-icon">
