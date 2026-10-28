@@ -5,7 +5,7 @@ import Header from "./components/Header";
 import UnifiedDropzone from "./components/UnifiedDropzone";
 import JsonViewer from "./components/JsonViewer";
 import { ExamMergedJson, GenerateApiResponse } from "@/types/exam";
-import { downloadJson } from "@/utils/download";
+import { downloadJson, formatExamFilename } from "@/utils/download";
 import {
   Sparkles,
   ArrowRight,
@@ -145,8 +145,8 @@ export default function Home() {
 
   const handleQuickDownload = async () => {
     if (!rawJson) return;
-    const baseName = questionPaper?.name.replace(/\.[^/.]+$/, "") || "exam";
-    await downloadJson(rawJson, `${baseName}_marked.json`);
+    const filename = formatExamFilename(resultData, questionPaper?.name);
+    await downloadJson(rawJson, filename);
   };
 
   const handleReset = () => {
@@ -367,7 +367,7 @@ export default function Home() {
             {/* JSON Output */}
             <JsonViewer
               jsonString={rawJson}
-              filename={`${questionPaper?.name.replace(/\.[^/.]+$/, "") || "9702_s26_qp_12"}_marked.json`}
+              filename={formatExamFilename(resultData, questionPaper?.name)}
             />
           </section>
         )}
