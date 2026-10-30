@@ -175,16 +175,22 @@ const SYMBOL_FONT_MAP: Record<string, string> = {
   "\uF0E5": "∑",
   "\uF0F0": "€",
   "\uF0F2": "∫",
+  // Wingdings tick / cross
+  "\uF0FC": "✓",
+  "\uF0FB": "✗",
 };
 
 export function normalizeSymbols(text: string): string {
   if (!text) return "";
-  return text.replace(/[\uF000-\uF0FF]/g, (ch) => {
+  let res = text.replace(/[\uF000-\uF0FF]/g, (ch) => {
     if (SYMBOL_FONT_MAP[ch]) return SYMBOL_FONT_MAP[ch];
     const code = ch.charCodeAt(0) - 0xf000;
     if (code >= 0x20 && code <= 0x7e) return String.fromCharCode(code);
     return "";
   });
+  // Map control characters for tick and cross commonly extracted from Cambridge PDFs
+  res = res.replace(/\u0016/g, "✓").replace(/[\u001A\u001a]/g, "✗");
+  return res;
 }
 
 function stripArtifacts(text: string): string {
@@ -347,6 +353,142 @@ function extractOptions(block: string): { options: Record<string, string>; befor
   return null;
 }
 
+function formatTableQuestion(
+  beforeOptions: string,
+  rawOptions: Record<string, string>
+): { questionText: string; options: Record<string, string> } {
+  let aText = rawOptions.A || "";
+  let bText = rawOptions.B || "";
+  let cText = rawOptions.C || "";
+  let dText = rawOptions.D || "";
+
+  // 1. Detect and strip table key / legend on the right of rows (e.g. key, ✓ = ..., ✗ = ...)
+  const keyItems: string[] = [];
+  const keyMatchA = aText.match(/\bkey\b\s*$/i);
+  if (keyMatchA) {
+    keyItems.push("key");
+    aText = aText.slice(0, keyMatchA.index).trim();
+  }
+  const legendRegex = /([✓✗xX]\s*=\s*[^\n]+)$/i;
+  const matchB = bText.match(legendRegex);
+  if (matchB) {
+    keyItems.push(matchB[1].trim());
+    bText = bText.slice(0, matchB.index).trim();
+  }
+  const matchC = cText.match(legendRegex);
+  if (matchC) {
+    keyItems.push(matchC[1].trim());
+    cText = cText.slice(0, matchC.index).trim();
+  }
+  const matchD = dText.match(legendRegex);
+  if (matchD) {
+    keyItems.push(matchD[1].trim());
+    dText = dText.slice(0, matchD.index).trim();
+  }
+
+  // Tokenize each row
+  const splitTokens = (str: string) => str.trim().split(/\s+/).filter(Boolean);
+  const aTokens = splitTokens(aText);
+  const bTokens = splitTokens(bText);
+  const cTokens = splitTokens(cText);
+  const dTokens = splitTokens(dText);
+
+  const numCols = aTokens.length;
+  if (
+    numCols < 2 ||
+    numCols > 6 ||
+    bTokens.length !== numCols ||
+    cTokens.length !== numCols ||
+    dTokens.length !== numCols
+  ) {
+    return { questionText: beforeOptions, options: rawOptions };
+  }
+
+  // Check table indicators
+  const hasLegend = keyItems.length > 0;
+  const allTokens = [...aTokens, ...bTokens, ...cTokens, ...dTokens];
+  const hasTickCross = allTokens.some((t) => /[✓✗]/.test(t));
+  const hasTableKeyword = /\b(table|row|column|columns)\b/i.test(beforeOptions);
+
+  if (!hasLegend && !hasTickCross && !hasTableKeyword) {
+    return { questionText: beforeOptions, options: rawOptions };
+  }
+
+  // Extract column headers from beforeOptions
+  const beforeLines = beforeOptions
+    .trim()
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  let headers: string[] = [];
+  let preambleLines: string[] = [];
+
+  // Strategy 1: The last numCols lines are individual column headers
+  if (beforeLines.length >= numCols + 1) {
+    const candidateLines = beforeLines.slice(-numCols);
+    const hasQuestionMark = candidateLines.some((l) => l.endsWith("?"));
+    if (!hasQuestionMark) {
+      headers = candidateLines;
+      preambleLines = beforeLines.slice(0, -numCols);
+    }
+  }
+
+  // Strategy 2: The last line has headers separated by 2+ spaces or tabs
+  if (headers.length === 0 && beforeLines.length > 0) {
+    const lastLine = beforeLines[beforeLines.length - 1];
+    const spacedChunks = lastLine.split(/\s{2,}|\t+/).filter(Boolean);
+    if (spacedChunks.length === numCols) {
+      headers = spacedChunks;
+      preambleLines = beforeLines.slice(0, -1);
+    }
+  }
+
+  // Strategy 3: The last line has single-space separated tokens matching numCols
+  if (headers.length === 0 && beforeLines.length > 0) {
+    const lastLine = beforeLines[beforeLines.length - 1];
+    const wordChunks = lastLine.split(/\s+/).filter(Boolean);
+    if (wordChunks.length === numCols && !lastLine.endsWith("?")) {
+      headers = wordChunks;
+      preambleLines = beforeLines.slice(0, -1);
+    }
+  }
+
+  // Fallback headers
+  if (headers.length === 0) {
+    headers = Array.from({ length: numCols }, (_, i) => `Column ${i + 1}`);
+    preambleLines = beforeLines;
+  }
+
+  // Build Markdown table
+  const tableRows: string[] = [];
+  tableRows.push(`| | ${headers.join(" | ")} |`);
+  tableRows.push(`| :---: | ${headers.map(() => ":---:").join(" | ")} |`);
+  tableRows.push(`| **A** | ${aTokens.join(" | ")} |`);
+  tableRows.push(`| **B** | ${bTokens.join(" | ")} |`);
+  tableRows.push(`| **C** | ${cTokens.join(" | ")} |`);
+  tableRows.push(`| **D** | ${dTokens.join(" | ")} |`);
+
+  let mdTable = tableRows.join("\n");
+  const legendEntries = keyItems.filter((k) => k.toLowerCase() !== "key");
+  if (legendEntries.length > 0) {
+    mdTable +=
+      "\n\n**Key:**\n" + legendEntries.map((k) => `- ${k}`).join("\n");
+  }
+
+  const finalQuestion = (preambleLines.join("\n") + "\n\n" + mdTable).trim();
+
+  return {
+    questionText: finalQuestion,
+    options: {
+      A: aTokens.join(" | "),
+      B: bTokens.join(" | "),
+      C: cTokens.join(" | "),
+      D: dTokens.join(" | "),
+    },
+  };
+}
+
 export async function parseExamPdfs(
   qpBuffer: ArrayBuffer | Uint8Array,
   msBuffer: ArrayBuffer | Uint8Array,
@@ -454,8 +596,9 @@ export async function parseExamPdfs(
     let options: Record<string, string> | undefined = undefined;
 
     if (optResult && Object.keys(optResult.options).length === 4) {
-      questionText = optResult.beforeOptions;
-      options = optResult.options;
+      const formatted = formatTableQuestion(optResult.beforeOptions, optResult.options);
+      questionText = formatted.questionText;
+      options = formatted.options;
     }
 
     const msData = answersMap.get(qNum) || { answer: "", marks: 1 };
