@@ -4,7 +4,7 @@ import React, { useState, useEffect } from "react";
 import Header from "./components/Header";
 import UnifiedDropzone from "./components/UnifiedDropzone";
 import JsonViewer from "./components/JsonViewer";
-import { ExamMergedJson, GenerateApiResponse } from "@/types/exam";
+import { ExamMergedJson, GenerateApiResponse, toSimplifiedJson } from "@/types/exam";
 import { downloadJson, formatExamFilename } from "@/utils/download";
 import {
   Sparkles,
@@ -95,7 +95,7 @@ export default function Home() {
         };
 
         setResultData(enrichedExamData);
-        setRawJson(JSON.stringify(enrichedExamData, null, 2));
+        setRawJson(JSON.stringify(toSimplifiedJson(enrichedExamData), null, 2));
       }
     } catch (err: any) {
       console.error(err);
@@ -208,7 +208,7 @@ export default function Home() {
         setProgressStep(4);
         // NOW display everything at once (mapping + explanations)
         setResultData(finalData);
-        setRawJson(JSON.stringify(finalData, null, 2));
+        setRawJson(JSON.stringify(toSimplifiedJson(finalData), null, 2));
       } else {
         throw new Error(
           "Could not detect questions in the uploaded Question Paper. Please ensure the PDF has selectable text."

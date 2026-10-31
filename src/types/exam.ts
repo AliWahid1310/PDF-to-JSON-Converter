@@ -20,6 +20,30 @@ export interface ExamMergedJson {
   questions: QuestionItem[];
 }
 
+// Simplified output shape for the downloaded/copied JSON
+export interface SimplifiedQuestionItem {
+  question_number: number;
+  correct_answer: string;
+  explanation: string;
+}
+
+export interface SimplifiedExamJson {
+  pdfUrl: string;
+  questions: SimplifiedQuestionItem[];
+}
+
+/** Transform full internal data to the simplified output shape */
+export function toSimplifiedJson(data: ExamMergedJson): SimplifiedExamJson {
+  return {
+    pdfUrl: data.pdfUrl,
+    questions: data.questions.map((q) => ({
+      question_number: q.number,
+      correct_answer: q.correctAnswer,
+      explanation: q.explanation,
+    })),
+  };
+}
+
 export interface GenerateApiResponse {
   success: boolean;
   data?: ExamMergedJson;
