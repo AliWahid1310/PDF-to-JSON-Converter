@@ -353,6 +353,187 @@ function extractOptions(block: string): { options: Record<string, string>; befor
   return null;
 }
 
+function joinHeaderLines(lines: string[]): string[] {
+  const result: string[] = [];
+  const endConnectors = /^(of|in|to|for|with|by|from|that|should|be|and|or|the|a|an|at|on|as|during|into|onto|high|low|thin|thick|folded|increased|decreased|stomatal|vascular|waxy|rough)$/i;
+  const startConnectors = /^(of|in|to|for|with|by|from|that|and|or|the|a|an|at|on|as|during|into|onto)$/i;
+
+  let current = "";
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i].trim();
+    if (!l) continue;
+    if (!current) {
+      current = l;
+    } else {
+      const lastWord = current.split(/\s+/).pop() || "";
+      const firstWord = l.split(/\s+/)[0] || "";
+      if (endConnectors.test(lastWord) || startConnectors.test(firstWord)) {
+        current += " " + l;
+      } else {
+        result.push(current);
+        current = l;
+      }
+    }
+  }
+  if (current) {
+    result.push(current);
+  }
+  return result;
+}
+
+function parseHeadersSmart(headerBlock: string, numCols: number): string[] {
+  if (!headerBlock || numCols <= 0) {
+    return Array.from({ length: Math.max(numCols, 2) }, (_, i) => `Column ${i + 1}`);
+  }
+
+  const trimmed = headerBlock.trim();
+
+  // Numbered headers: "1 2 3 4 5"
+  if (/^(\d+\s+)+\d+$/.test(trimmed)) {
+    return trimmed.split(/\s+/);
+  }
+
+  const rawLines = trimmed.split("\n").map((l) => l.trim()).filter(Boolean);
+  const joinedLines = joinHeaderLines(rawLines);
+
+  // Exact match with joined lines
+  if (joinedLines.length === numCols) {
+    return joinedLines;
+  }
+
+  // Exact multiple of joined lines
+  if (joinedLines.length > numCols && joinedLines.length % numCols === 0) {
+    const linesPerCol = joinedLines.length / numCols;
+    const cols: string[] = [];
+    for (let i = 0; i < numCols; i++) {
+      cols.push(joinedLines.slice(i * linesPerCol, (i + 1) * linesPerCol).join(" "));
+    }
+    return cols;
+  }
+
+  // Multi-space separated
+  const spaced = trimmed.split(/\s{2,}|\t+/).filter(Boolean);
+  if (spaced.length === numCols) {
+    return spaced;
+  }
+
+  // Words count matches numCols
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  if (words.length === numCols) {
+    return words;
+  }
+
+  // Group joined lines as evenly as possible
+  if (joinedLines.length >= numCols) {
+    const cols: string[] = [];
+    const base = Math.floor(joinedLines.length / numCols);
+    const rem = joinedLines.length % numCols;
+    let idx = 0;
+    for (let i = 0; i < numCols; i++) {
+      const take = base + (i < rem ? 1 : 0);
+      cols.push(joinedLines.slice(idx, idx + take).join(" "));
+      idx += take;
+    }
+    return cols;
+  }
+
+  // Group words as evenly as possible
+  if (words.length >= numCols) {
+    const cols: string[] = [];
+    const base = Math.floor(words.length / numCols);
+    const rem = words.length % numCols;
+    let idx = 0;
+    for (let i = 0; i < numCols; i++) {
+      const take = base + (i < rem ? 1 : 0);
+      cols.push(words.slice(idx, idx + take).join(" "));
+      idx += take;
+    }
+    return cols;
+  }
+
+  return Array.from({ length: numCols }, (_, i) => `Column ${i + 1}`);
+}
+
+function splitRowSmart(rowText: string, numCols: number, allRows?: string[]): string[] {
+  const trimmed = rowText.trim();
+  if (numCols <= 1) return [trimmed];
+
+  // If row contains ticks and crosses exclusively
+  const symbols = trimmed.split(/\s+/).filter(Boolean);
+  if (symbols.length === numCols && symbols.every((s) => /^[✓✗xX]$/.test(s))) {
+    return symbols;
+  }
+
+  // Tab or multi-space
+  const spaced = trimmed.split(/\s{2,}|\t+/).filter(Boolean);
+  if (spaced.length === numCols) return spaced;
+
+  // Exact newlines
+  const lines = trimmed.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (lines.length === numCols) return lines;
+
+  // Exact word count
+  const tokens = trimmed.split(/\s+/).filter(Boolean);
+  if (tokens.length === numCols) return tokens;
+
+  // Multi-token equal size
+  if (tokens.length > numCols && tokens.length % numCols === 0) {
+    const size = tokens.length / numCols;
+    const parts: string[] = [];
+    for (let i = 0; i < numCols; i++) {
+      parts.push(tokens.slice(i * size, (i + 1) * size).join(" "));
+    }
+    return parts;
+  }
+
+  // "only" delimiter for 2 columns: e.g. "1, 2 and 3 only 1, 2 and 4 only"
+  if (numCols === 2 && trimmed.includes("only")) {
+    const m = trimmed.match(/^([\s\S]+?\bonly\b)\s+([\s\S]+)$/i);
+    if (m) {
+      return [m[1].trim(), m[2].trim()];
+    }
+  }
+
+  // For 2 columns: try matching common prefix/phrase if allRows provided
+  if (numCols === 2 && allRows && allRows.length === 4) {
+    for (const other of allRows) {
+      if (other === rowText) continue;
+      const oTokens = other.trim().split(/\s+/).filter(Boolean);
+      let commonLen = 0;
+      while (commonLen < tokens.length && commonLen < oTokens.length && tokens[commonLen] === oTokens[commonLen]) {
+        commonLen++;
+      }
+      if (commonLen >= 2 && commonLen < tokens.length) {
+        const col1 = tokens.slice(0, commonLen).join(" ");
+        const col2 = tokens.slice(commonLen).join(" ");
+        return [col1, col2];
+      }
+    }
+  }
+
+  // For 2 columns, split evenly
+  if (numCols === 2 && tokens.length > 2) {
+    const mid = Math.floor(tokens.length / 2);
+    return [tokens.slice(0, mid).join(" "), tokens.slice(mid).join(" ")];
+  }
+
+  // For N columns, distribute tokens
+  if (tokens.length > numCols) {
+    const parts: string[] = [];
+    const base = Math.floor(tokens.length / numCols);
+    const rem = tokens.length % numCols;
+    let idx = 0;
+    for (let i = 0; i < numCols; i++) {
+      const take = base + (i < rem ? 1 : 0);
+      parts.push(tokens.slice(idx, idx + take).join(" "));
+      idx += take;
+    }
+    return parts;
+  }
+
+  return [trimmed];
+}
+
 function formatTableQuestion(
   beforeOptions: string,
   rawOptions: Record<string, string>
@@ -386,105 +567,103 @@ function formatTableQuestion(
     dText = dText.slice(0, matchD.index).trim();
   }
 
-  // Tokenize each row
-  const splitTokens = (str: string) => str.trim().split(/\s+/).filter(Boolean);
-  const aTokens = splitTokens(aText);
-  const bTokens = splitTokens(bText);
-  const cTokens = splitTokens(cText);
-  const dTokens = splitTokens(dText);
+  // Find question boundary (the last '?' or ':')
+  const lastQMark = Math.max(beforeOptions.lastIndexOf("?"), beforeOptions.lastIndexOf(":"));
+  const preamble = lastQMark !== -1 ? beforeOptions.slice(0, lastQMark + 1).trim() : beforeOptions.trim();
+  const headerBlock = lastQMark !== -1 ? beforeOptions.slice(lastQMark + 1).trim() : "";
 
-  const numCols = aTokens.length;
-  if (
-    numCols < 2 ||
-    numCols > 6 ||
-    bTokens.length !== numCols ||
-    cTokens.length !== numCols ||
-    dTokens.length !== numCols
-  ) {
-    return { questionText: beforeOptions, options: rawOptions };
-  }
-
-  // Check table indicators
+  // Check if this is a table question
+  const allOptionText = aText + " " + bText + " " + cText + " " + dText;
+  const hasTicksOrCrosses = /[✓✗]/.test(allOptionText);
+  const hasTableKeyword = /\b(?:Which|In which|What)\s+(?:table\s+)?row\b|\bThe\s+table\s+(?:shows|lists|gives)\b|\bWhich\s+(?:table\s+)?changes\b/i.test(beforeOptions);
+  const hasHeaderBlock = headerBlock.length > 0;
   const hasLegend = keyItems.length > 0;
-  const allTokens = [...aTokens, ...bTokens, ...cTokens, ...dTokens];
-  const hasTickCross = allTokens.some((t) => /[✓✗]/.test(t));
-  const hasTableKeyword = /\b(table|row|column|columns)\b/i.test(beforeOptions);
 
-  if (!hasLegend && !hasTickCross && !hasTableKeyword) {
+  const isTable = (hasTableKeyword && (hasHeaderBlock || hasTicksOrCrosses)) || (hasTicksOrCrosses && (hasLegend || hasHeaderBlock));
+
+  if (!isTable) {
     return { questionText: beforeOptions, options: rawOptions };
   }
 
-  // Extract column headers from beforeOptions
-  const beforeLines = beforeOptions
-    .trim()
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
+  // Determine numCols
+  const hTrim = headerBlock.trim();
+  let numCols = 0;
 
-  let headers: string[] = [];
-  let preambleLines: string[] = [];
+  // Numbered headers: "1 2 3 4 5"
+  if (/^(\d+\s+)+\d+$/.test(hTrim)) {
+    numCols = hTrim.split(/\s+/).length;
+  }
 
-  // Strategy 1: The last numCols lines are individual column headers
-  if (beforeLines.length >= numCols + 1) {
-    const candidateLines = beforeLines.slice(-numCols);
-    const hasQuestionMark = candidateLines.some((l) => l.endsWith("?"));
-    if (!hasQuestionMark) {
-      headers = candidateLines;
-      preambleLines = beforeLines.slice(0, -numCols);
+  // Ticks or crosses
+  if (numCols === 0 && hasTicksOrCrosses) {
+    const aTicks = aText.replace(/[^✓✗]/g, "");
+    const bTicks = bText.replace(/[^✓✗]/g, "");
+    if (aTicks.length >= 2 && aTicks.length === bTicks.length) {
+      numCols = aTicks.length;
     }
   }
 
-  // Strategy 2: The last line has headers separated by 2+ spaces or tabs
-  if (headers.length === 0 && beforeLines.length > 0) {
-    const lastLine = beforeLines[beforeLines.length - 1];
-    const spacedChunks = lastLine.split(/\s{2,}|\t+/).filter(Boolean);
-    if (spacedChunks.length === numCols) {
-      headers = spacedChunks;
-      preambleLines = beforeLines.slice(0, -1);
+  // Repeating "only"
+  if (numCols === 0 && (/\bonly\b[\s\S]+\bonly\b/i.test(aText) || (/\bonly\b/i.test(aText) && /\bonly\b/i.test(bText)))) {
+    numCols = 2;
+  }
+
+  // Equal word counts across all 4 rows
+  if (numCols === 0) {
+    const aToks = aText.split(/\s+/).filter(Boolean);
+    const bToks = bText.split(/\s+/).filter(Boolean);
+    const cToks = cText.split(/\s+/).filter(Boolean);
+    const dToks = dText.split(/\s+/).filter(Boolean);
+    if (aToks.length >= 2 && aToks.length <= 6 && aToks.length === bToks.length && aToks.length === cToks.length && aToks.length === dToks.length) {
+      numCols = aToks.length;
     }
   }
 
-  // Strategy 3: The last line has single-space separated tokens matching numCols
-  if (headers.length === 0 && beforeLines.length > 0) {
-    const lastLine = beforeLines[beforeLines.length - 1];
-    const wordChunks = lastLine.split(/\s+/).filter(Boolean);
-    if (wordChunks.length === numCols && !lastLine.endsWith("?")) {
-      headers = wordChunks;
-      preambleLines = beforeLines.slice(0, -1);
+  // Header block lines
+  if (numCols === 0 && hTrim) {
+    const rawLines = hTrim.split("\n").map((l) => l.trim()).filter(Boolean);
+    const joined = joinHeaderLines(rawLines);
+    if (joined.length >= 2 && joined.length <= 5) {
+      numCols = joined.length;
     }
   }
 
-  // Fallback headers
-  if (headers.length === 0) {
-    headers = Array.from({ length: numCols }, (_, i) => `Column ${i + 1}`);
-    preambleLines = beforeLines;
+  if (numCols < 2 || numCols > 6) {
+    numCols = 2;
   }
+
+  const headers = parseHeadersSmart(headerBlock, numCols);
+  const allRows = [aText, bText, cText, dText];
+
+  const rowA = splitRowSmart(aText, numCols, allRows);
+  const rowB = splitRowSmart(bText, numCols, allRows);
+  const rowC = splitRowSmart(cText, numCols, allRows);
+  const rowD = splitRowSmart(dText, numCols, allRows);
 
   // Build Markdown table
   const tableRows: string[] = [];
   tableRows.push(`| | ${headers.join(" | ")} |`);
   tableRows.push(`| :---: | ${headers.map(() => ":---:").join(" | ")} |`);
-  tableRows.push(`| **A** | ${aTokens.join(" | ")} |`);
-  tableRows.push(`| **B** | ${bTokens.join(" | ")} |`);
-  tableRows.push(`| **C** | ${cTokens.join(" | ")} |`);
-  tableRows.push(`| **D** | ${dTokens.join(" | ")} |`);
+  tableRows.push(`| **A** | ${rowA.join(" | ")} |`);
+  tableRows.push(`| **B** | ${rowB.join(" | ")} |`);
+  tableRows.push(`| **C** | ${rowC.join(" | ")} |`);
+  tableRows.push(`| **D** | ${rowD.join(" | ")} |`);
 
   let mdTable = tableRows.join("\n");
   const legendEntries = keyItems.filter((k) => k.toLowerCase() !== "key");
   if (legendEntries.length > 0) {
-    mdTable +=
-      "\n\n**Key:**\n" + legendEntries.map((k) => `- ${k}`).join("\n");
+    mdTable += "\n\n**Key:**\n" + legendEntries.map((k) => `- ${k}`).join("\n");
   }
 
-  const finalQuestion = (preambleLines.join("\n") + "\n\n" + mdTable).trim();
+  const finalQuestion = (preamble + "\n\n" + mdTable).trim();
 
   return {
     questionText: finalQuestion,
     options: {
-      A: aTokens.join(" | "),
-      B: bTokens.join(" | "),
-      C: cTokens.join(" | "),
-      D: dTokens.join(" | "),
+      A: rowA.join(" | "),
+      B: rowB.join(" | "),
+      C: rowC.join(" | "),
+      D: rowD.join(" | "),
     },
   };
 }
