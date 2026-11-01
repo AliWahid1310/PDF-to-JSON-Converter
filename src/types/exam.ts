@@ -32,6 +32,26 @@ export interface SimplifiedExamJson {
   questions: SimplifiedQuestionItem[];
 }
 
+export interface ExamPair {
+  id: string;
+  label: string;
+  qp: File | null;
+  ms: File | null;
+  status: "ready" | "missing_qp" | "missing_ms";
+}
+
+export interface BatchConversionResult {
+  id: string;
+  label: string;
+  qpName: string;
+  msName: string;
+  filename: string;
+  examData: ExamMergedJson;
+  simplifiedData: SimplifiedExamJson;
+  rawJson: string;
+  totalQuestions: number;
+}
+
 /** Transform full internal data to the simplified output shape */
 export function toSimplifiedJson(data: ExamMergedJson): SimplifiedExamJson {
   return {

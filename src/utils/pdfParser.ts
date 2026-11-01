@@ -258,6 +258,28 @@ function stripPageHeader(pageText: string): string {
   return lines.join("\n");
 }
 
+/**
+ * Detects whether a page is a pure Data sheet, Formulae sheet, or Periodic Table reference sheet
+ * without actual MCQ questions, so it can be skipped safely.
+ */
+function isReferenceOrCoverPage(pageText: string): boolean {
+  if (!pageText) return false;
+  const isDataSheet =
+    /speed of light|elementary charge|the Planck constant|gravitational constant|acceleration of free fall/i.test(pageText) &&
+    /\bData\b/i.test(pageText);
+  const isFormulaSheet =
+    /uniformly accelerated motion|hydrostatic pressure|gravitational potential|simple harmonic motion/i.test(pageText) &&
+    /\bFormulae?\b/i.test(pageText);
+  const isPeriodicTable =
+    /Periodic Table|atomic number|relative atomic mass/i.test(pageText) &&
+    !/\bWhich\b|\bWhat is\b|\bCalculate\b/i.test(pageText);
+
+  // If a page has actual MCQ options A, B, C, D, it is an exam question page, NOT a reference sheet
+  const hasOptions = /[ \t\n]A[ \t]+[^\n]+[ \t\n]B[ \t]+[^\n]+[ \t\n]C[ \t]+/m.test(pageText);
+
+  return (isDataSheet || isFormulaSheet || isPeriodicTable) && !hasOptions;
+}
+
 function cleanText(t: string): string {
   if (!t) return "";
   return normalizeSymbols(stripArtifacts(t))
@@ -743,24 +765,19 @@ export async function parseExamPdfs(
 
   // 3. Determine starting page for question extraction:
   // - Page 1 (index 0) is ALWAYS the cover/instruction sheet.
-  // - Page 2 (index 1) is ONLY skipped if it is a pure formula sheet with no questions.
-  //   In Biology, Chemistry, Economics, Business, Math, etc., Page 2 starts with Question 1!
+  // - In Physics (9702), Chemistry (9701), and Math (9709), Pages 2 and 3 are often Data & Formulae sheets.
+  // - Skip any pure Data / Formulae / Reference sheets until we reach the first page with real questions.
   let pStart = 1;
-  if (qpPages.length > 2) {
-    const p2 = qpPages[1];
-    const isFormulaSheet =
-      /acceleration of free fall|speed of light/i.test(p2) &&
-      /\bFormulae\b/i.test(p2);
-    const hasQ1 = /(?:^|\n)[ \t]*1[ \t]+(?=[^\n]*[A-Za-z])[^\n]{6,}/m.test(p2);
-    if (isFormulaSheet && !hasQ1) {
-      pStart = 2;
-    }
+  while (pStart < qpPages.length && isReferenceOrCoverPage(qpPages[pStart])) {
+    pStart++;
   }
 
   let bodyText = "";
   for (let idx = pStart; idx < qpPages.length; idx++) {
-    const cleanPage = stripPageHeader(qpPages[idx]);
-    bodyText += "\n" + stripArtifacts(cleanPage);
+    if (!isReferenceOrCoverPage(qpPages[idx])) {
+      const cleanPage = stripPageHeader(qpPages[idx]);
+      bodyText += "\n" + stripArtifacts(cleanPage);
+    }
   }
 
   // 4. Robust Sequential Question Extraction:

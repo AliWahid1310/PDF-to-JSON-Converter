@@ -1,55 +1,25 @@
 "use client";
 
 import React, { useRef, useState } from "react";
-import { UploadCloud, FileText, CheckCircle2, X, AlertCircle } from "lucide-react";
+import {
+  UploadCloud,
+  FileText,
+  CheckCircle2,
+  X,
+  AlertCircle,
+  Plus,
+  Trash2,
+  Layers,
+} from "lucide-react";
+import { ExamPair } from "@/types/exam";
+import { detectRole, pairExamFiles } from "@/utils/filePairing";
 
 interface UnifiedDropzoneProps {
-  questionPaper: File | null;
-  markingScheme: File | null;
-  onFilesDetected: (qp: File | null, ms: File | null) => void;
-}
-
-function detectRole(file: File): "qp" | "ms" | "unknown" {
-  const name = file.name.toLowerCase();
-
-  // 1. Explicit phrase matches: "question paper", "marking scheme", "mark scheme"
-  const isQuestionPaperPhrase =
-    name.includes("question paper") ||
-    name.includes("question_paper") ||
-    name.includes("question-paper") ||
-    name.includes("questionpaper") ||
-    name.includes("question papers") ||
-    name.includes("question_papers");
-
-  const isMarkingSchemePhrase =
-    name.includes("marking scheme") ||
-    name.includes("marking_scheme") ||
-    name.includes("marking-scheme") ||
-    name.includes("markingscheme") ||
-    name.includes("mark scheme") ||
-    name.includes("mark_scheme") ||
-    name.includes("mark-scheme") ||
-    name.includes("markscheme") ||
-    name.includes("marking schemes") ||
-    name.includes("marking_schemes");
-
-  if (isQuestionPaperPhrase && !isMarkingSchemePhrase) return "qp";
-  if (isMarkingSchemePhrase && !isQuestionPaperPhrase) return "ms";
-
-  // 2. Token / word boundary matches (e.g. _qp_, -qp-, qp., "qp ", _ms_, -ms-, ms.)
-  const isQpToken = /(?:^|[^a-z0-9])(qp)(?:[^a-z0-9]|$)/i.test(name);
-  const isMsToken = /(?:^|[^a-z0-9])(ms)(?:[^a-z0-9]|$)/i.test(name);
-
-  if (isQpToken && !isMsToken) return "qp";
-  if (isMsToken && !isQpToken) return "ms";
-
-  // 3. Fallback substring match if unambiguous
-  const hasQp = name.includes("qp");
-  const hasMs = name.includes("ms");
-  if (hasQp && !hasMs) return "qp";
-  if (hasMs && !hasQp) return "ms";
-
-  return "unknown";
+  pairs: ExamPair[];
+  onPairsChange: (pairs: ExamPair[]) => void;
+  questionPaper?: File | null;
+  markingScheme?: File | null;
+  onFilesDetected?: (qp: File | null, ms: File | null) => void;
 }
 
 const formatSize = (bytes: number): string => {
@@ -59,6 +29,8 @@ const formatSize = (bytes: number): string => {
 };
 
 export default function UnifiedDropzone({
+  pairs,
+  onPairsChange,
   questionPaper,
   markingScheme,
   onFilesDetected,
@@ -66,6 +38,22 @@ export default function UnifiedDropzone({
   const [isDragging, setIsDragging] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const targetedPairRef = useRef<{ pairId: string; role: "qp" | "ms" } | null>(null);
+
+  // Collect all currently held files
+  const getAllFiles = (): File[] => {
+    const list: File[] = [];
+    for (const p of pairs) {
+      if (p.qp) list.push(p.qp);
+      if (p.ms) list.push(p.ms);
+    }
+    // Also include legacy single files if passed and not yet in pairs
+    if (pairs.length === 0) {
+      if (questionPaper) list.push(questionPaper);
+      if (markingScheme) list.push(markingScheme);
+    }
+    return list;
+  };
 
   const processFiles = (files: File[]) => {
     setErrorMsg(null);
@@ -79,30 +67,44 @@ export default function UnifiedDropzone({
       return;
     }
 
-    let newQp = questionPaper;
-    let newMs = markingScheme;
+    // Check if user was targeting a specific slot in an existing pair
+    if (targetedPairRef.current) {
+      const { pairId, role } = targetedPairRef.current;
+      targetedPairRef.current = null;
+      const targetPdf = pdfs[0];
 
-    for (const pdf of pdfs) {
-      const role = detectRole(pdf);
-      if (role === "qp") {
-        newQp = pdf;
-      } else if (role === "ms") {
-        newMs = pdf;
-      } else {
-        // If one slot is empty, put it in the empty slot
-        if (!newQp) {
-          newQp = pdf;
-        } else if (!newMs) {
-          newMs = pdf;
-        } else {
-          setErrorMsg(
-            `Could not auto-detect "${pdf.name}". Please ensure the filename contains "Question Paper" / "qp" or "Marking Scheme" / "ms".`
-          );
+      const updated = pairs.map((p) => {
+        if (p.id === pairId) {
+          const nextQp = role === "qp" ? targetPdf : p.qp;
+          const nextMs = role === "ms" ? targetPdf : p.ms;
+          const status: ExamPair["status"] =
+            nextQp && nextMs ? "ready" : nextQp ? "missing_ms" : "missing_qp";
+          return { ...p, qp: nextQp, ms: nextMs, status };
         }
+        return p;
+      });
+
+      onPairsChange(updated);
+      if (onFilesDetected && updated.length > 0) {
+        onFilesDetected(updated[0].qp, updated[0].ms);
+      }
+      return;
+    }
+
+    // General drop: merge with existing files and re-pair
+    const existing = getAllFiles();
+    const merged: File[] = [...existing];
+    for (const p of pdfs) {
+      if (!merged.some((f) => f.name === p.name && f.size === p.size)) {
+        merged.push(p);
       }
     }
 
-    onFilesDetected(newQp, newMs);
+    const newPairs = pairExamFiles(merged);
+    onPairsChange(newPairs);
+    if (onFilesDetected && newPairs.length > 0) {
+      onFilesDetected(newPairs[0].qp, newPairs[0].ms);
+    }
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -137,44 +139,87 @@ export default function UnifiedDropzone({
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  const handleRemoveQp = (e: React.MouseEvent) => {
+  const handleRemovePair = (pairId: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    onFilesDetected(null, markingScheme);
+    const updated = pairs.filter((p) => p.id !== pairId);
+    onPairsChange(updated);
+    if (onFilesDetected) {
+      if (updated.length > 0) onFilesDetected(updated[0].qp, updated[0].ms);
+      else onFilesDetected(null, null);
+    }
   };
 
-  const handleRemoveMs = (e: React.MouseEvent) => {
+  const handleRemoveSingleFile = (
+    pairId: string,
+    role: "qp" | "ms",
+    e: React.MouseEvent
+  ) => {
     e.stopPropagation();
-    onFilesDetected(questionPaper, null);
+    const updated = pairs
+      .map((p) => {
+        if (p.id === pairId) {
+          const nextQp = role === "qp" ? null : p.qp;
+          const nextMs = role === "ms" ? null : p.ms;
+          if (!nextQp && !nextMs) return null;
+          const status: ExamPair["status"] =
+            nextQp && nextMs ? "ready" : nextQp ? "missing_ms" : "missing_qp";
+          return { ...p, qp: nextQp, ms: nextMs, status };
+        }
+        return p;
+      })
+      .filter((p): p is ExamPair => p !== null);
+
+    onPairsChange(updated);
+    if (onFilesDetected) {
+      if (updated.length > 0) onFilesDetected(updated[0].qp, updated[0].ms);
+      else onFilesDetected(null, null);
+    }
   };
 
-  const hasFiles = Boolean(questionPaper || markingScheme);
-  const bothReady = Boolean(questionPaper && markingScheme);
+  const handleSlotClick = (pairId: string, role: "qp" | "ms") => {
+    targetedPairRef.current = { pairId, role };
+    fileInputRef.current?.click();
+  };
+
+  const readyPairsCount = pairs.filter((p) => p.status === "ready").length;
+  const hasFiles = pairs.length > 0;
+  const isMultiple = pairs.length > 1;
 
   return (
     <div className="dropzone-card unified-dropzone-card">
       <div className="dropzone-header">
         <div>
-          <span className="pill-tag pill-yellow">One-Click Upload</span>
+          <span className="pill-tag pill-yellow">
+            {isMultiple ? "Batch Multi-Paper Upload" : "One-Click Upload"}
+          </span>
           <h3 className="dropzone-title">
-            Drop Question Paper &amp; Marking Scheme Together
+            {isMultiple
+              ? `Multiple Exam Papers & Marking Schemes (${pairs.length} Papers)`
+              : "Drop Question Paper & Marking Scheme Together"}
           </h3>
         </div>
-        {bothReady ? (
-          <span className="file-ready-tag">
-            <CheckCircle2 className="w-4 h-4 text-black" />
-            <span>Both Files Ready</span>
-          </span>
-        ) : (
-          <span className="file-count-tag">
-            {questionPaper && !markingScheme && "1 of 2 Uploaded (MS missing)"}
-            {!questionPaper && markingScheme && "1 of 2 Uploaded (QP missing)"}
-            {!questionPaper && !markingScheme && "0 of 2 Uploaded"}
+
+        {hasFiles && (
+          <span className={`file-count-tag ${readyPairsCount === pairs.length ? "ready-all" : ""}`}>
+            {readyPairsCount === pairs.length ? (
+              <>
+                <CheckCircle2 className="w-4 h-4 text-black" />
+                <span>
+                  {pairs.length === 1 ? "Both Files Ready" : `All ${pairs.length} Papers Paired & Ready`}
+                </span>
+              </>
+            ) : (
+              <span>
+                {readyPairsCount} of {pairs.length} Papers Ready ({pairs.length - readyPairsCount} Missing Match)
+              </span>
+            )}
           </span>
         )}
       </div>
 
       <p className="dropzone-desc">
-        Select or drop both PDFs into this single box. Our system auto-detects files containing <strong>&quot;Question Paper&quot;</strong> or <strong>&quot;qp&quot;</strong> as Question Papers, and <strong>&quot;Marking Scheme&quot;</strong> or <strong>&quot;ms&quot;</strong> as Marking Schemes.
+        Select or drop all your PDFs into this single box. Upload one paper pair or multiple variants simultaneously (e.g.{" "}
+        <strong>QP 11 &amp; MS 11, QP 12 &amp; MS 12, QP 13 &amp; MS 13</strong>). Our system auto-matches each Question Paper with its exact Marking Scheme.
       </p>
 
       <div
@@ -185,7 +230,10 @@ export default function UnifiedDropzone({
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
-        onClick={() => fileInputRef.current?.click()}
+        onClick={() => {
+          targetedPairRef.current = null;
+          fileInputRef.current?.click();
+        }}
       >
         <input
           ref={fileInputRef}
@@ -202,101 +250,139 @@ export default function UnifiedDropzone({
               <UploadCloud className="w-8 h-8 text-black" />
             </div>
             <div className="upload-instructions">
-              <span className="upload-cta">Click to browse</span> or drag &amp; drop both PDFs here
+              <span className="upload-cta">Click to browse</span> or drag &amp; drop all PDFs here
             </div>
             <p className="upload-hint">
-              Drop both files at once • Filenames with &quot;Question Paper&quot; / &quot;qp&quot; and &quot;Marking Scheme&quot; / &quot;ms&quot; are automatically identified
+              Drop single or multiple files (e.g. QP 11, MS 11, QP 12, MS 12...) • Files are automatically paired by exam code and variant
             </p>
           </div>
         ) : (
           <div className="unified-files-list" onClick={(e) => e.stopPropagation()}>
-            {/* Question Paper slot */}
-            <div className={`unified-file-row ${questionPaper ? "filled" : "empty"}`}>
-              <div className="unified-file-role">
-                <span className="unified-role-badge role-qp">QP</span>
-              </div>
-              {questionPaper ? (
-                <>
-                  <div className="file-icon-box">
-                    <FileText className="w-5 h-5 text-black" />
-                  </div>
-                  <div className="file-info-details">
-                    <span className="selected-filename" title={questionPaper.name}>
-                      {questionPaper.name}
-                    </span>
-                    <span className="selected-filesize">
-                      {formatSize(questionPaper.size)} • Identified as <strong>Question Paper</strong>
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    className="btn-remove-file"
-                    onClick={handleRemoveQp}
-                    title="Remove Question Paper"
-                  >
-                    <X className="w-4 h-4 text-black" />
-                  </button>
-                </>
-              ) : (
-                <div
-                  className="unified-empty-slot"
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  <span className="unified-empty-text">
-                    Question Paper not detected yet. <u>Click or drop QP file</u>
-                  </span>
-                </div>
-              )}
-            </div>
-
-            {/* Marking Scheme slot */}
-            <div className={`unified-file-row ${markingScheme ? "filled" : "empty"}`}>
-              <div className="unified-file-role">
-                <span className="unified-role-badge role-ms">MS</span>
-              </div>
-              {markingScheme ? (
-                <>
-                  <div className="file-icon-box">
-                    <FileText className="w-5 h-5 text-black" />
-                  </div>
-                  <div className="file-info-details">
-                    <span className="selected-filename" title={markingScheme.name}>
-                      {markingScheme.name}
-                    </span>
-                    <span className="selected-filesize">
-                      {formatSize(markingScheme.size)} • Identified as <strong>Marking Scheme</strong>
-                    </span>
+            {pairs.map((pair, idx) => (
+              <div key={pair.id} className="batch-pair-card">
+                <div className="batch-pair-header">
+                  <div className="batch-pair-title-box">
+                    <Layers className="w-4 h-4 text-black" />
+                    <span className="batch-pair-label">{pair.label}</span>
+                    {pair.status === "ready" ? (
+                      <span className="batch-pair-badge badge-ready">
+                        <CheckCircle2 className="w-3.5 h-3.5" /> Paired Ready
+                      </span>
+                    ) : pair.status === "missing_ms" ? (
+                      <span className="batch-pair-badge badge-warning">
+                        Missing Marking Scheme
+                      </span>
+                    ) : (
+                      <span className="batch-pair-badge badge-warning">
+                        Missing Question Paper
+                      </span>
+                    )}
                   </div>
                   <button
                     type="button"
-                    className="btn-remove-file"
-                    onClick={handleRemoveMs}
-                    title="Remove Marking Scheme"
+                    className="batch-btn-remove-pair"
+                    onClick={(e) => handleRemovePair(pair.id, e)}
+                    title={`Remove ${pair.label}`}
                   >
-                    <X className="w-4 h-4 text-black" />
+                    <Trash2 className="w-3.5 h-3.5 text-black" />
+                    <span>Remove</span>
                   </button>
-                </>
-              ) : (
-                <div
-                  className="unified-empty-slot"
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  <span className="unified-empty-text">
-                    Marking Scheme not detected yet. <u>Click or drop MS file</u>
-                  </span>
                 </div>
-              )}
-            </div>
 
-            {/* Bottom bar of unified list */}
+                <div className="batch-pair-files">
+                  {/* QP Row */}
+                  <div className={`unified-file-row ${pair.qp ? "filled" : "empty"}`}>
+                    <div className="unified-file-role">
+                      <span className="unified-role-badge role-qp">QP</span>
+                    </div>
+                    {pair.qp ? (
+                      <>
+                        <div className="file-icon-box">
+                          <FileText className="w-5 h-5 text-black" />
+                        </div>
+                        <div className="file-info-details">
+                          <span className="selected-filename" title={pair.qp.name}>
+                            {pair.qp.name}
+                          </span>
+                          <span className="selected-filesize">
+                            {formatSize(pair.qp.size)} • Question Paper
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          className="btn-remove-file"
+                          onClick={(e) => handleRemoveSingleFile(pair.id, "qp", e)}
+                          title="Remove Question Paper"
+                        >
+                          <X className="w-4 h-4 text-black" />
+                        </button>
+                      </>
+                    ) : (
+                      <div
+                        className="unified-empty-slot"
+                        onClick={() => handleSlotClick(pair.id, "qp")}
+                      >
+                        <span className="unified-empty-text">
+                          Question Paper missing for {pair.label}. <u>Click to select QP</u>
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* MS Row */}
+                  <div className={`unified-file-row ${pair.ms ? "filled" : "empty"}`}>
+                    <div className="unified-file-role">
+                      <span className="unified-role-badge role-ms">MS</span>
+                    </div>
+                    {pair.ms ? (
+                      <>
+                        <div className="file-icon-box">
+                          <FileText className="w-5 h-5 text-black" />
+                        </div>
+                        <div className="file-info-details">
+                          <span className="selected-filename" title={pair.ms.name}>
+                            {pair.ms.name}
+                          </span>
+                          <span className="selected-filesize">
+                            {formatSize(pair.ms.size)} • Marking Scheme
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          className="btn-remove-file"
+                          onClick={(e) => handleRemoveSingleFile(pair.id, "ms", e)}
+                          title="Remove Marking Scheme"
+                        >
+                          <X className="w-4 h-4 text-black" />
+                        </button>
+                      </>
+                    ) : (
+                      <div
+                        className="unified-empty-slot"
+                        onClick={() => handleSlotClick(pair.id, "ms")}
+                      >
+                        <span className="unified-empty-text">
+                          Marking Scheme missing for {pair.label}. <u>Click to select MS</u>
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+
+            {/* Bottom Actions Bar */}
             <div className="unified-actions-bar">
               <button
                 type="button"
                 className="unified-add-more-btn"
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => {
+                  targetedPairRef.current = null;
+                  fileInputRef.current?.click();
+                }}
               >
-                <UploadCloud className="w-3.5 h-3.5" />
-                <span>{bothReady ? "Replace / Upload More" : "Add Missing File"}</span>
+                <Plus className="w-3.5 h-3.5" />
+                <span>Add More Papers / Variants</span>
               </button>
             </div>
           </div>

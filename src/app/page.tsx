@@ -4,7 +4,13 @@ import React, { useState, useEffect } from "react";
 import Header from "./components/Header";
 import UnifiedDropzone from "./components/UnifiedDropzone";
 import JsonViewer from "./components/JsonViewer";
-import { ExamMergedJson, GenerateApiResponse, toSimplifiedJson } from "@/types/exam";
+import {
+  ExamMergedJson,
+  GenerateApiResponse,
+  toSimplifiedJson,
+  ExamPair,
+  BatchConversionResult,
+} from "@/types/exam";
 import { downloadJson, formatExamFilename } from "@/utils/download";
 import {
   Sparkles,
@@ -20,11 +26,14 @@ import {
   Clock,
   Layers,
   GraduationCap,
+  FolderArchive,
+  FileCheck,
 } from "lucide-react";
 
 import { parseExamPdfs } from "@/utils/pdfParser";
 
 export default function Home() {
+  const [pairs, setPairs] = useState<ExamPair[]>([]);
   const [questionPaper, setQuestionPaper] = useState<File | null>(null);
   const [markingScheme, setMarkingScheme] = useState<File | null>(null);
 
@@ -34,10 +43,15 @@ export default function Home() {
 
   // Loading and Progress states
   const [isLoading, setIsLoading] = useState(false);
-  const [progressStep, setProgressStep] = useState<number>(0);
+  const [progressStatusText, setProgressStatusText] = useState<string>("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Result state
+  // Batch Result states
+  const [batchResults, setBatchResults] = useState<BatchConversionResult[]>([]);
+  const [selectedResultIndex, setSelectedResultIndex] = useState<number>(0);
+  const [isDownloadingAll, setIsDownloadingAll] = useState(false);
+
+  // Result state (legacy & active result display)
   const [resultData, setResultData] = useState<ExamMergedJson | null>(null);
   const [rawJson, setRawJson] = useState<string>("");
 
@@ -53,166 +67,176 @@ export default function Home() {
     }
   }, []);
 
-  // Dedicated function to synthesize teacher explanations WITHOUT touching any question/answer mapping
-  const handleEnrichExplanations = async (targetData?: ExamMergedJson | null, customKey?: string) => {
-    const dataToEnrich = targetData || resultData;
-    if (!dataToEnrich || !dataToEnrich.questions || dataToEnrich.questions.length === 0) {
-      return;
-    }
-
-    const keyToUse = customKey || apiKey || "";
-
-    setIsExplaining(true);
-    setErrorMessage(null);
-
-    try {
-      const res = await fetch("/api/explain", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          questions: dataToEnrich.questions,
-          subject: dataToEnrich.subject,
-          apiKey: keyToUse,
-        }),
-      });
-
-      const json = await res.json();
-      if (!res.ok || !json.success) {
-        throw new Error(json.error || "Failed to generate AI explanations.");
-      }
-
-      if (json.explanations) {
-        // STRICT RULE: Update ONLY the explanation field by question number.
-        // number, question, options, correctAnswer, and marks remain completely untouched.
-        const enrichedQuestions = dataToEnrich.questions.map((q) => ({
-          ...q,
-          explanation: json.explanations[String(q.number)] || q.explanation,
-        }));
-
-        const enrichedExamData: ExamMergedJson = {
-          ...dataToEnrich,
-          questions: enrichedQuestions,
-        };
-
-        setResultData(enrichedExamData);
-        setRawJson(JSON.stringify(toSimplifiedJson(enrichedExamData), null, 2));
-      }
-    } catch (err: any) {
-      console.error(err);
-      setErrorMessage(err.message || "Could not synthesize AI explanations.");
-    } finally {
-      setIsExplaining(false);
+  const handlePairsChange = (newPairs: ExamPair[]) => {
+    setPairs(newPairs);
+    if (newPairs.length > 0) {
+      setQuestionPaper(newPairs[0].qp);
+      setMarkingScheme(newPairs[0].ms);
+    } else {
+      setQuestionPaper(null);
+      setMarkingScheme(null);
     }
   };
 
   const handleGenerate = async () => {
-    if (!questionPaper || !markingScheme) {
-      setErrorMessage("Please upload both the Question Paper and the Marking Scheme PDF.");
-      return;
+    const readyPairs = pairs.filter((p) => p.qp && p.ms);
+
+    // If no pairs in state, check legacy questionPaper & markingScheme
+    if (readyPairs.length === 0) {
+      if (questionPaper && markingScheme) {
+        readyPairs.push({
+          id: "pair-legacy-1",
+          label: "Exam Paper",
+          qp: questionPaper,
+          ms: markingScheme,
+          status: "ready",
+        });
+      } else {
+        setErrorMessage(
+          "Please upload at least one matching Question Paper and Marking Scheme pair."
+        );
+        return;
+      }
     }
 
     setIsLoading(true);
     setErrorMessage(null);
+    setBatchResults([]);
+    setSelectedResultIndex(0);
     setResultData(null);
     setRawJson("");
-    setProgressStep(1);
 
-    const stepTimer1 = setTimeout(() => setProgressStep(2), 500);
-    const stepTimer2 = setTimeout(() => setProgressStep(3), 1000);
+    const generatedBatch: BatchConversionResult[] = [];
 
     try {
-      const targetPdfUrl = questionPaper.name || "exam.pdf";
+      for (let i = 0; i < readyPairs.length; i++) {
+        const pair = readyPairs[i];
+        const qpFile = pair.qp!;
+        const msFile = pair.ms!;
+        const pairNum = i + 1;
+        const totalCount = readyPairs.length;
 
-      // 1. Direct PDF parsing in the browser (client-side)
-      let examData: ExamMergedJson | null = null;
-      let clientParseError: string | null = null;
+        // 1. Parse PDFs
+        setProgressStatusText(
+          `Paper ${pairNum} of ${totalCount} (${pair.label}): Parsing question paper & marking scheme...`
+        );
 
-      try {
-        const qpBuffer = await questionPaper.arrayBuffer();
-        const msBuffer = await markingScheme.arrayBuffer();
-        const parsed = await parseExamPdfs(qpBuffer, msBuffer, targetPdfUrl);
-        if (parsed && parsed.questions && parsed.questions.length > 0) {
-          examData = parsed;
+        let examData: ExamMergedJson | null = null;
+        let clientParseError: string | null = null;
+
+        try {
+          const qpBuffer = await qpFile.arrayBuffer();
+          const msBuffer = await msFile.arrayBuffer();
+          const parsed = await parseExamPdfs(qpBuffer, msBuffer, qpFile.name);
+          if (parsed && parsed.questions && parsed.questions.length > 0) {
+            examData = parsed;
+          }
+        } catch (err: any) {
+          console.warn("Client parse attempt for " + pair.label + ":", err);
+          clientParseError = err?.message;
         }
-      } catch (err: any) {
-        console.warn("Client-side parse attempted:", err);
-        clientParseError = err?.message;
-      }
 
-      // 2. Fallback to /api/generate if needed
-      if (!examData) {
-        const formData = new FormData();
-        formData.append("questionPaper", questionPaper);
-        formData.append("markingScheme", markingScheme);
-        formData.append("pdfUrl", targetPdfUrl);
+        // Fallback to /api/generate if client-side failed
+        if (!examData) {
+          const formData = new FormData();
+          formData.append("questionPaper", qpFile);
+          formData.append("markingScheme", msFile);
+          formData.append("pdfUrl", qpFile.name);
 
-        const res = await fetch("/api/generate", {
-          method: "POST",
-          body: formData,
-        });
+          const res = await fetch("/api/generate", {
+            method: "POST",
+            body: formData,
+          });
 
-        if (res.status === 413) {
+          if (!res.ok) {
+            const responseText = await res.text();
+            throw new Error(
+              responseText.slice(0, 200) ||
+                `Failed to parse ${qpFile.name} (Direct: ${clientParseError || "Unknown"})`
+            );
+          }
+
+          const jsonRes: GenerateApiResponse = await res.json();
+          if (!jsonRes.success || !jsonRes.data) {
+            throw new Error(jsonRes.error || `Failed to parse ${qpFile.name}`);
+          }
+          examData = jsonRes.data;
+        }
+
+        if (!examData || !examData.questions || examData.questions.length === 0) {
           throw new Error(
-            "Uploaded PDF is too large for server processing (exceeds 4.5MB limit). " +
-            (clientParseError ? `(Direct parser: ${clientParseError})` : "")
+            `Could not extract questions from "${qpFile.name}". Please ensure the PDF has selectable text.`
           );
         }
 
-        const responseText = await res.text();
-        let jsonRes: GenerateApiResponse;
-        try {
-          jsonRes = JSON.parse(responseText);
-        } catch {
-          throw new Error(responseText.slice(0, 200) || "Failed to parse exam PDFs.");
+        // 2. Synthesize AI Explanations
+        setProgressStatusText(
+          `Paper ${pairNum} of ${totalCount} (${pair.label}): Synthesizing AI explanations...`
+        );
+
+        let finalData = examData;
+        // Retry the explain API up to 2 times if it fails
+        const MAX_EXPLAIN_RETRIES = 2;
+        for (let explainAttempt = 1; explainAttempt <= MAX_EXPLAIN_RETRIES; explainAttempt++) {
+          try {
+            setProgressStatusText(
+              `Paper ${pairNum} of ${totalCount} (${pair.label}): Synthesizing AI explanations${explainAttempt > 1 ? ` (retry ${explainAttempt})` : ""}...`
+            );
+            const explainRes = await fetch("/api/explain", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                questions: examData.questions,
+                subject: examData.subject,
+                apiKey: apiKey || "",
+              }),
+            });
+            const explainJson = await explainRes.json();
+            if (explainJson.success && explainJson.explanations) {
+              const enrichedQuestions = examData.questions.map((q) => ({
+                ...q,
+                explanation:
+                  explainJson.explanations[String(q.number)] || q.explanation,
+              }));
+              finalData = { ...examData, questions: enrichedQuestions };
+              break; // Success — stop retrying
+            } else {
+              console.warn(`Explain API returned success=false for ${pair.label}, attempt ${explainAttempt}`);
+              if (explainAttempt < MAX_EXPLAIN_RETRIES) {
+                await new Promise((res) => setTimeout(res, 2000));
+              }
+            }
+          } catch (explainErr) {
+            console.warn(`Auto-enrichment attempt ${explainAttempt} failed for ${pair.label}:`, explainErr);
+            if (explainAttempt < MAX_EXPLAIN_RETRIES) {
+              await new Promise((res) => setTimeout(res, 2000));
+            }
+          }
         }
 
-        if (!res.ok || !jsonRes.success) {
-          throw new Error(jsonRes.error || "Failed to parse exam PDFs.");
-        }
+        // 3. Format Simplified JSON output
+        const simplified = toSimplifiedJson(finalData);
+        const rawJsonStr = JSON.stringify(simplified, null, 2);
+        const filename = formatExamFilename(finalData, qpFile.name);
 
-        if (jsonRes.data) {
-          examData = jsonRes.data;
-        }
+        generatedBatch.push({
+          id: pair.id,
+          label: pair.label,
+          qpName: qpFile.name,
+          msName: msFile.name,
+          filename,
+          examData: finalData,
+          simplifiedData: simplified,
+          rawJson: rawJsonStr,
+          totalQuestions: finalData.questions.length,
+        });
       }
 
-      if (examData) {
-        // 3. Automatically synthesize high-accuracy teacher explanations for all users!
-        // We DO NOT show results yet — wait until explanations are also ready.
-        setProgressStep(3);
-        let finalData = examData;
-        try {
-          const explainRes = await fetch("/api/explain", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              questions: examData.questions,
-              subject: examData.subject,
-              apiKey: apiKey || "",
-            }),
-          });
-          const explainJson = await explainRes.json();
-          if (explainJson.success && explainJson.explanations) {
-            // STRICT GUARANTEE: update ONLY the explanation field by question number.
-            // question number, question text, options, and correctAnswer are 100% immutable.
-            const enrichedQuestions = examData.questions.map((q) => ({
-              ...q,
-              explanation:
-                explainJson.explanations[String(q.number)] || q.explanation,
-            }));
-            finalData = { ...examData, questions: enrichedQuestions };
-          }
-        } catch (explainErr) {
-          console.warn("Auto-enrichment skipped:", explainErr);
-        }
-
-        setProgressStep(4);
-        // NOW display everything at once (mapping + explanations)
-        setResultData(finalData);
-        setRawJson(JSON.stringify(toSimplifiedJson(finalData), null, 2));
-      } else {
-        throw new Error(
-          "Could not detect questions in the uploaded Question Paper. Please ensure the PDF has selectable text."
-        );
+      setBatchResults(generatedBatch);
+      setSelectedResultIndex(0);
+      if (generatedBatch.length > 0) {
+        setResultData(generatedBatch[0].examData);
+        setRawJson(generatedBatch[0].rawJson);
       }
 
       setTimeout(() => {
@@ -220,12 +244,18 @@ export default function Home() {
       }, 250);
     } catch (err: any) {
       console.error(err);
-      setErrorMessage(err.message || "An unexpected error occurred during generation.");
+      setErrorMessage(err.message || "An error occurred during conversion.");
     } finally {
-      clearTimeout(stepTimer1);
-      clearTimeout(stepTimer2);
       setIsLoading(false);
-      setProgressStep(0);
+      setProgressStatusText("");
+    }
+  };
+
+  const handleSelectResult = (index: number) => {
+    setSelectedResultIndex(index);
+    if (batchResults[index]) {
+      setResultData(batchResults[index].examData);
+      setRawJson(batchResults[index].rawJson);
     }
   };
 
@@ -242,19 +272,44 @@ export default function Home() {
 
   const handleQuickDownload = async () => {
     if (!rawJson) return;
-    const filename = formatExamFilename(resultData, questionPaper?.name);
+    const current = batchResults[selectedResultIndex];
+    const filename = current ? current.filename : formatExamFilename(resultData, questionPaper?.name);
     await downloadJson(rawJson, filename);
   };
 
+  const handleDownloadAll = async () => {
+    if (batchResults.length === 0) return;
+    setIsDownloadingAll(true);
+    try {
+      for (let i = 0; i < batchResults.length; i++) {
+        const item = batchResults[i];
+        await downloadJson(item.rawJson, item.filename);
+        if (i < batchResults.length - 1) {
+          // Pause briefly between downloads so browser triggers multiple file downloads smoothly
+          await new Promise((res) => setTimeout(res, 500));
+        }
+      }
+    } catch (err) {
+      console.error("Batch download error:", err);
+    } finally {
+      setIsDownloadingAll(false);
+    }
+  };
+
   const handleReset = () => {
+    setPairs([]);
     setQuestionPaper(null);
     setMarkingScheme(null);
+    setBatchResults([]);
+    setSelectedResultIndex(0);
     setResultData(null);
     setRawJson("");
     setErrorMessage(null);
   };
 
-
+  const readyPairs = pairs.filter((p) => p.qp && p.ms);
+  const readyCount = readyPairs.length;
+  const currentBatchItem = batchResults[selectedResultIndex] || null;
 
   return (
     <div className="app-container">
@@ -275,27 +330,27 @@ export default function Home() {
           </h2>
 
           <p className="hero-description">
-            Designed specifically for Learningscapes Academy teachers. Upload your exam
-            question paper and official marking scheme PDF in a single box. Our system auto-identifies
-            both files, combines every question with its verified answer, generates step-by-step
-            explanations, and produces a single, cleanly structured JSON file ready for download.
+            Designed specifically for Learningscapes Academy teachers. Upload single papers or
+            batch convert multiple variants at once (e.g. QP 11 &amp; MS 11, QP 12 &amp; MS 12, QP 13 &amp; MS 13).
+            Our system auto-matches each Question Paper with its verified Marking Scheme, generates
+            step-by-step explanations, and produces separate, cleanly structured JSON files ready for download.
           </p>
 
           {/* 3 Simple Steps */}
           <div className="teacher-steps-bar">
             <div className="step-item">
               <span className="step-number">1</span>
-              <span className="step-text">Drop Both PDFs Together (QP &amp; MS)</span>
+              <span className="step-text">Drop PDF Pairs (Single or Multiple)</span>
             </div>
             <span className="step-arrow">→</span>
             <div className="step-item">
               <span className="step-number">2</span>
-              <span className="step-text">Generate Combined JSON</span>
+              <span className="step-text">Auto-Match &amp; Generate JSON</span>
             </div>
             <span className="step-arrow">→</span>
             <div className="step-item">
               <span className="step-number">3</span>
-              <span className="step-text">Download Clean JSON</span>
+              <span className="step-text">Download Clean JSON Files</span>
             </div>
           </div>
         </section>
@@ -303,6 +358,8 @@ export default function Home() {
         {/* Upload Studio Grid */}
         <section className="upload-section">
           <UnifiedDropzone
+            pairs={pairs}
+            onPairsChange={handlePairsChange}
             questionPaper={questionPaper}
             markingScheme={markingScheme}
             onFilesDetected={(qp, ms) => {
@@ -321,7 +378,7 @@ export default function Home() {
 
           {/* Action Trigger Button */}
           <div className="action-row">
-            {(questionPaper || markingScheme || resultData) && (
+            {(pairs.length > 0 || questionPaper || markingScheme || batchResults.length > 0) && (
               <button
                 type="button"
                 onClick={handleReset}
@@ -337,24 +394,22 @@ export default function Home() {
               id="generate-json-btn"
               type="button"
               onClick={handleGenerate}
-              disabled={isLoading || !questionPaper || !markingScheme}
+              disabled={isLoading || readyCount === 0}
               className={`btn-primary ${isLoading ? "btn-loading" : ""}`}
             >
               {isLoading ? (
                 <>
                   <RefreshCw className="w-5 h-5 animate-spin" />
-                  <span>
-                    {progressStep === 1 && "Reading PDF papers..."}
-                    {progressStep === 2 && "Matching questions to marking scheme..."}
-                    {progressStep === 3 && "Synthesizing teacher explanations..."}
-                    {progressStep === 4 && "Generating clean JSON..."}
-                    {progressStep === 0 && "Processing..."}
-                  </span>
+                  <span>{progressStatusText || "Processing exam papers..."}</span>
                 </>
               ) : (
                 <>
                   <Sparkles className="w-5 h-5" />
-                  <span>Generate Combined JSON</span>
+                  <span>
+                    {readyCount > 1
+                      ? `Generate Combined JSON (${readyCount} Papers)`
+                      : "Generate Combined JSON"}
+                  </span>
                   <ArrowRight className="w-5 h-5" />
                 </>
               )}
@@ -365,9 +420,31 @@ export default function Home() {
         {/* Output & Results Section */}
         {resultData && (
           <section id="results-section" className="results-section">
+            {/* Batch Navigation Tabs (when multiple files are converted) */}
+            {batchResults.length > 1 && (
+              <div className="batch-tabs-bar">
+                {batchResults.map((item, idx) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`batch-tab-btn ${selectedResultIndex === idx ? "active" : ""}`}
+                    onClick={() => handleSelectResult(idx)}
+                  >
+                    <FileCheck className="w-4 h-4" />
+                    <span>{item.label}</span>
+                    <span className="batch-tab-badge">{item.totalQuestions} Qs</span>
+                  </button>
+                ))}
+              </div>
+            )}
+
             <div className="results-header">
               <div className="results-meta">
-                <span className="pill-tag pill-yellow">Fusion Complete</span>
+                <span className="pill-tag pill-yellow">
+                  {batchResults.length > 1
+                    ? `Paper ${selectedResultIndex + 1} of ${batchResults.length}: Fusion Complete`
+                    : "Fusion Complete"}
+                </span>
                 <h3 className="results-title">
                   {resultData.subject} • {resultData.paper}
                 </h3>
@@ -377,6 +454,30 @@ export default function Home() {
               </div>
 
               <div className="results-quick-actions">
+                {/* Download All button when multiple papers exist */}
+                {batchResults.length > 1 && (
+                  <button
+                    id="download-all-btn"
+                    onClick={handleDownloadAll}
+                    disabled={isDownloadingAll}
+                    className="btn-action-solid"
+                    style={{ background: "#000000", color: "#facc15" }}
+                    title="Download all converted JSON files at once"
+                  >
+                    {isDownloadingAll ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin text-yellow-accent" />
+                        <span>Downloading...</span>
+                      </>
+                    ) : (
+                      <>
+                        <FolderArchive className="w-4 h-4 text-yellow-accent" />
+                        <span>Download All ({batchResults.length} Files)</span>
+                      </>
+                    )}
+                  </button>
+                )}
+
                 <button
                   id="quick-copy-btn"
                   onClick={handleQuickCopy}
@@ -390,7 +491,7 @@ export default function Home() {
                   ) : (
                     <>
                       <Copy className="w-4 h-4" />
-                      <span>Copy JSON</span>
+                      <span>Copy Current JSON</span>
                     </>
                   )}
                 </button>
@@ -401,7 +502,11 @@ export default function Home() {
                   className="btn-action-solid"
                 >
                   <Download className="w-4 h-4" />
-                  <span>Download .json</span>
+                  <span>
+                    {batchResults.length > 1
+                      ? `Download ${currentBatchItem?.label || "Paper"}.json`
+                      : "Download .json"}
+                  </span>
                 </button>
               </div>
             </div>
@@ -446,7 +551,9 @@ export default function Home() {
               </div>
               <div className="stat-card">
                 <span className="stat-label">Total Marks</span>
-                <span className="stat-value">{resultData.totalMarks || resultData.questions?.length || 40}</span>
+                <span className="stat-value">
+                  {resultData.totalMarks || resultData.questions?.length || 40}
+                </span>
                 <span className="stat-desc">Marks Allocated</span>
               </div>
               <div className="stat-card">
@@ -455,16 +562,19 @@ export default function Home() {
                 <span className="stat-desc">Scheme Matches Verified</span>
               </div>
               <div className="stat-card">
-                <span className="stat-label">Citations</span>
-                <span className="stat-value">Zero</span>
-                <span className="stat-desc">Clean Output Ensured</span>
+                <span className="stat-label">Total Converted</span>
+                <span className="stat-value">{batchResults.length || 1}</span>
+                <span className="stat-desc">JSON Papers Ready</span>
               </div>
             </div>
 
             {/* JSON Output */}
             <JsonViewer
               jsonString={rawJson}
-              filename={formatExamFilename(resultData, questionPaper?.name)}
+              filename={
+                currentBatchItem?.filename ||
+                formatExamFilename(resultData, questionPaper?.name)
+              }
             />
           </section>
         )}
