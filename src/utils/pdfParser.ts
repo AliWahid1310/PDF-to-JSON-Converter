@@ -225,9 +225,37 @@ function stripArtifacts(text: string): string {
     // Barcode strings like *4083621324*
     .replace(/\*[0-9]{8,}\*/g, "")
     // Print batch codes
-    .replace(/^IB\d{2}\s+[^\n]+/gm, "")
-    // Lone page numbers
-    .replace(/^\s*\d{1,3}\s*$/gm, "");
+    .replace(/^IB\d{2}\s+[^\n]+/gm, "");
+}
+
+/**
+ * Safely strips page numbers that appear at the top of a page.
+ * Only strips if the number is on the first line and followed immediately by a Cambridge header/copyright line,
+ * ensuring question numbers on their own line (e.g. "4\n...") are NEVER deleted.
+ */
+function stripPageHeader(pageText: string): string {
+  if (!pageText) return "";
+  const lines = pageText.split("\n");
+  let firstIdx = -1;
+  let secondIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim()) {
+      if (firstIdx === -1) {
+        firstIdx = i;
+      } else if (secondIdx === -1) {
+        secondIdx = i;
+        break;
+      }
+    }
+  }
+  if (firstIdx !== -1 && secondIdx !== -1) {
+    if (/^\s*\d{1,2}\s*$/.test(lines[firstIdx])) {
+      if (/©|Cambridge|UCLES|Turn over|\d{4}\/\d{2}|Assessment|Question Paper|Mark Scheme/i.test(lines[secondIdx])) {
+        lines[firstIdx] = "";
+      }
+    }
+  }
+  return lines.join("\n");
 }
 
 function cleanText(t: string): string {
@@ -289,13 +317,33 @@ function parseMarkingScheme(msText: string): Map<number, { answer: string; marks
   const lines = msText.split("\n");
   for (const line of lines) {
     const trimmed = line.trim();
-    // Matches patterns like "1 D 1", "28 C 1", or "40 D 1"
-    const match = trimmed.match(/^(\d{1,3})\s+([A-D]|[\w\.\-]+(?:\s*\(?\d*\)?))\s+(\d+)$/i);
-    if (match) {
-      const qNum = parseInt(match[1], 10);
-      const ans = match[2].trim().toUpperCase();
-      const marks = parseInt(match[3], 10);
-      answers.set(qNum, { answer: ans, marks });
+    if (!trimmed) continue;
+
+    // Tokenize line by whitespace/tabs to support:
+    // 1. Two questions per line with marks: "1 B 1 21 A 1"
+    // 2. Two questions per line without marks: "1 B 21 A"
+    // 3. Single question with marks: "1 B 1"
+    // 4. Single question without marks: "1 B"
+    const tokens = trimmed.split(/\s+/).filter(Boolean);
+    let i = 0;
+    while (i < tokens.length) {
+      const qNumMatch = tokens[i].match(/^(\d{1,2})$/);
+      if (qNumMatch && i + 1 < tokens.length) {
+        const qNum = parseInt(qNumMatch[1], 10);
+        const ansMatch = tokens[i + 1].match(/^([A-D](?:\s*[\/,]\s*[A-D])*)$/i);
+        if (ansMatch && qNum >= 1 && qNum <= 60) {
+          let marks = 1;
+          i += 2;
+          // Check if subsequent token is the mark allocation (e.g. "1")
+          if (i < tokens.length && /^[1-9]$/.test(tokens[i])) {
+            marks = parseInt(tokens[i], 10);
+            i += 1;
+          }
+          answers.set(qNum, { answer: ansMatch[1].toUpperCase(), marks });
+          continue;
+        }
+      }
+      i++;
     }
   }
 
@@ -711,78 +759,87 @@ export async function parseExamPdfs(
 
   let bodyText = "";
   for (let idx = pStart; idx < qpPages.length; idx++) {
-    bodyText += "\n" + stripArtifacts(qpPages[idx]);
+    const cleanPage = stripPageHeader(qpPages[idx]);
+    bodyText += "\n" + stripArtifacts(cleanPage);
   }
 
-  // 4. Sequential Question Extraction:
-  // Questions in exam papers strictly follow 1, 2, 3, ..., N in sequential order.
+  // 4. Robust Sequential Question Extraction:
+  // Detects boundaries for every question in the paper (1 to totalQuestions).
+  // Supports questions starting with space, tab, period, parentheses, or newline (when question number is on its own line).
   const totalQuestions = answersMap.size > 0 ? answersMap.size : 40;
   const questions: QuestionItem[] = [];
-  let searchOffset = 0;
+
+  // Pass 1: Find all question start offsets in order
+  interface QuestionStart {
+    qNum: number;
+    qStart: number;
+    headerLen: number;
+  }
+  const questionStarts: QuestionStart[] = [];
+  let currentOffset = 0;
 
   for (let qNum = 1; qNum <= totalQuestions; qNum++) {
-    const nextQ = qNum + 1;
-    // Header pattern: number at start of line, followed by substantive text containing letters
-    const qStartRegex = new RegExp(
-      '(?:^|\\n)[ \\t]*' + qNum + '[ \\t]+(?=[^\\n]*[A-Za-z])([^\\n]{6,})',
+    const slice = bodyText.slice(currentOffset);
+    // Matches question number at start of line:
+    // e.g. "4 Which...", "4. Which...", "4) Which...", or "4\nWhich..."
+    const qPattern = new RegExp(
+      '(?:^|\\n)[ \\t]*' + qNum + '(?:\\.|\\))?(?:[ \\t\\u00A0]+|\\n[ \\t]*)(?=[^\\n]*[A-Za-z])',
       'm'
     );
-    const slice = bodyText.slice(searchOffset);
-    const match = slice.match(qStartRegex);
+    const match = slice.match(qPattern);
 
-    if (!match) {
-      continue;
+    if (match) {
+      const qStart = currentOffset + (match.index || 0);
+      questionStarts.push({ qNum, qStart, headerLen: match[0].length });
+      // Advance offset past the question number match so internal statements don't interfere
+      currentOffset = qStart + match[0].length;
     }
+  }
 
-    const matchIndexInFull = searchOffset + (match.index || 0);
+  // Pass 2: Extract text, table formatting, and options for every question 1..totalQuestions
+  // If a question header was missed in the PDF text, it is still included with its marking scheme answer.
+  const startMap = new Map<number, QuestionStart>();
+  for (const qs of questionStarts) {
+    startMap.set(qs.qNum, qs);
+  }
 
-    // Find where the next question begins to delimit the current question block.
-    // If the current question contains numbered statements (e.g. 1, 2, 3 in Question 2),
-    // next question candidate is only valid if options A, B, C, D occur before it!
-    let nextMatchIndexInFull = bodyText.length;
-    if (qNum < totalQuestions) {
-      const nextQRegex = new RegExp(
-        '(?:^|\\n)[ \\t]*' + nextQ + '[ \\t]+(?=[^\\n]*[A-Za-z])([^\\n]{6,})',
-        'gm'
-      );
-      const searchRegion = bodyText.slice(matchIndexInFull + match[0].length);
-      let candidate: RegExpExecArray | null;
-      let chosenIndex = -1;
+  for (let qNum = 1; qNum <= totalQuestions; qNum++) {
+    const currentStart = startMap.get(qNum);
+    let questionText = "";
+    let options: Record<string, string> | undefined = undefined;
 
-      while ((candidate = nextQRegex.exec(searchRegion)) !== null) {
-        const textBeforeCandidate = searchRegion.slice(0, candidate.index);
-        const hasOptionsBefore = extractOptions(textBeforeCandidate) !== null;
-
-        if (hasOptionsBefore) {
-          chosenIndex = candidate.index;
+    if (currentStart) {
+      // Find the start offset of the next detected question
+      let nextStartOffset = bodyText.length;
+      for (let nextQ = qNum + 1; nextQ <= totalQuestions; nextQ++) {
+        const nextQS = startMap.get(nextQ);
+        if (nextQS) {
+          nextStartOffset = nextQS.qStart;
           break;
-        } else {
-          chosenIndex = candidate.index;
         }
       }
 
-      if (chosenIndex !== -1) {
-        nextMatchIndexInFull = matchIndexInFull + match[0].length + chosenIndex;
+      const rawBlock = bodyText.slice(currentStart.qStart, nextStartOffset).trim();
+      // Strip leading question number (e.g. "4 ", "4. ", "4\n", "4.\n")
+      const withoutNum = rawBlock
+        .replace(/^[ \t]*\d{1,3}(?:\.|\))?(?:[ \t\u00A0]+|\n[ \t]*)/, "")
+        .trim();
+
+      const optResult = extractOptions(withoutNum);
+      questionText = withoutNum;
+
+      if (optResult && Object.keys(optResult.options).length === 4) {
+        const formatted = formatTableQuestion(optResult.beforeOptions, optResult.options);
+        questionText = formatted.questionText;
+        options = formatted.options;
       }
-    }
-
-    const rawBlock = bodyText.slice(matchIndexInFull, nextMatchIndexInFull).trim();
-    // Strip leading question number
-    const withoutNum = rawBlock.replace(/^[ \t]*\d{1,3}[ \t]+/, "").trim();
-
-    const optResult = extractOptions(withoutNum);
-    let questionText = withoutNum;
-    let options: Record<string, string> | undefined = undefined;
-
-    if (optResult && Object.keys(optResult.options).length === 4) {
-      const formatted = formatTableQuestion(optResult.beforeOptions, optResult.options);
-      questionText = formatted.questionText;
-      options = formatted.options;
+    } else {
+      // If question text couldn't be located in the PDF text stream, provide a clean fallback
+      questionText = `Question ${qNum}`;
     }
 
     const msData = answersMap.get(qNum) || { answer: "", marks: 1 };
     const ansLetter = msData.answer || "";
-
     const optText = options && ansLetter && options[ansLetter] ? `: ${options[ansLetter]}` : "";
     const explanation = `Correct option is ${ansLetter}${optText}.`;
 
@@ -794,9 +851,6 @@ export async function parseExamPdfs(
       marks: msData.marks || 1,
       explanation,
     });
-
-    // Advance searchOffset to the boundary of the next question
-    searchOffset = nextMatchIndexInFull;
   }
 
   return {
