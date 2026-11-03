@@ -315,6 +315,12 @@ function parseExamMetadata(firstPageText: string, filename: string): Omit<ExamMe
   } else {
     const singleSub = firstPageText.match(/\n(PHYSICS|CHEMISTRY|BIOLOGY|MATHEMATICS|ECONOMICS|BUSINESS|ACCOUNTING|COMPUTER SCIENCE)/i);
     if (singleSub) meta.subject = cleanText(singleSub[1]);
+
+    // Check for paper code (e.g. "0455/11" or "9708/12") anywhere on the cover page
+    const paperCodeMatch = firstPageText.match(/(?:^|[^0-9])(\d{4}\/\d{1,2})(?:[^0-9]|$)/);
+    if (paperCodeMatch) {
+      meta.paper = paperCodeMatch[1];
+    }
   }
 
   // Component

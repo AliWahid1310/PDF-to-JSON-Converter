@@ -21,38 +21,77 @@ export function formatExamFilename(
     return "exam.json";
   }
 
-  // 1. Subject code (e.g. 9700, 9702, 9701, 9709)
+  const candidateSources = [
+    examData.paper,
+    examData.pdfUrl,
+    fallbackFilename,
+    examData.syllabus,
+  ].filter(Boolean) as string[];
+
+  // 1. Subject code (e.g. 0455, 9700, 9702, 9708, 0610, etc.)
   let subjectCode = "";
+  let variantFromSlash = "";
 
-  // Check paper string (e.g. "9700/12" or "9702/12")
-  const paperMatch = examData.paper?.match(/(\d{4})\/(\d{1,2})/);
-  if (paperMatch) {
-    subjectCode = paperMatch[1];
+  // A. Check for explicit slash pattern first: e.g. "0455/11", "9708/12", "9702/11"
+  for (const src of candidateSources) {
+    const slashMatch = src.match(/(?:^|[^0-9])(\d{4})\/(\d{1,2})(?:[^0-9]|$)/);
+    if (slashMatch) {
+      subjectCode = slashMatch[1];
+      variantFromSlash = slashMatch[2];
+      break;
+    }
   }
 
-  // If not found in paper, check syllabus (e.g. "9700" or "Cambridge 9700")
-  if (!subjectCode && examData.syllabus) {
-    const sylMatch = examData.syllabus.match(/\b(\d{4})\b/);
-    if (sylMatch) subjectCode = sylMatch[1];
+  // B. Check if any source starts with 4 digits: e.g. "0455_s23_qp_11.pdf", "9708_m18_qp_12.pdf"
+  if (!subjectCode) {
+    for (const src of candidateSources) {
+      const startMatch = src.match(/^(?:qp|ms|exam)?[_\s-]*(\d{4})(?:[^0-9]|$)/i);
+      if (startMatch) {
+        subjectCode = startMatch[1];
+        break;
+      }
+    }
   }
 
-  // If not found, check pdfUrl (e.g. "9700 Biology March 2026...")
-  if (!subjectCode && examData.pdfUrl) {
-    const urlMatch = examData.pdfUrl.match(/\b(\d{4})\b/);
-    if (urlMatch) subjectCode = urlMatch[1];
+  // C. Find any 4-digit code that is NOT a calendar year (1990-2099)
+  // e.g. "0455", "0610", "0620", "9700", "9702", "9708", "9709", "9618"
+  if (!subjectCode) {
+    for (const src of candidateSources) {
+      const allFourDigits = [...src.matchAll(/(?<!\d)(\d{4})(?!\d)/g)].map((m) => m[1]);
+      for (const numStr of allFourDigits) {
+        const num = parseInt(numStr, 10);
+        if (num < 1990 || num > 2099) {
+          subjectCode = numStr;
+          break;
+        }
+      }
+      if (subjectCode) break;
+    }
   }
 
-  // Common Cambridge Subject Code Map fallback if subject name is given
+  // D. If still not found and there are multiple 4-digit numbers, pick the first one
+  if (!subjectCode) {
+    for (const src of candidateSources) {
+      const allFourDigits = [...src.matchAll(/(?<!\d)(\d{4})(?!\d)/g)].map((m) => m[1]);
+      if (allFourDigits.length > 0) {
+        subjectCode = allFourDigits[0];
+        break;
+      }
+    }
+  }
+
+  // E. Fallback only if no 4-digit code could be found in ANY filename or metadata
   if (!subjectCode && examData.subject) {
     const subLower = examData.subject.toLowerCase();
-    if (subLower.includes("bio")) subjectCode = "9700";
-    else if (subLower.includes("chem")) subjectCode = "9701";
-    else if (subLower.includes("phys")) subjectCode = "9702";
-    else if (subLower.includes("math")) subjectCode = "9709";
-    else if (subLower.includes("comp")) subjectCode = "9618";
-    else if (subLower.includes("econ")) subjectCode = "9708";
-    else if (subLower.includes("bus")) subjectCode = "9609";
-    else if (subLower.includes("acc")) subjectCode = "9706";
+    const isIGCSE = (examData.syllabus || "").toLowerCase().includes("igcse");
+    if (subLower.includes("bio")) subjectCode = isIGCSE ? "0610" : "9700";
+    else if (subLower.includes("chem")) subjectCode = isIGCSE ? "0620" : "9701";
+    else if (subLower.includes("phys")) subjectCode = isIGCSE ? "0625" : "9702";
+    else if (subLower.includes("math")) subjectCode = isIGCSE ? "0580" : "9709";
+    else if (subLower.includes("comp")) subjectCode = isIGCSE ? "0478" : "9618";
+    else if (subLower.includes("econ")) subjectCode = isIGCSE ? "0455" : "9708";
+    else if (subLower.includes("bus")) subjectCode = isIGCSE ? "0450" : "9609";
+    else if (subLower.includes("acc")) subjectCode = isIGCSE ? "0452" : "9706";
     else {
       subjectCode = subLower.replace(/[^a-z0-9]/g, "");
     }
@@ -60,7 +99,7 @@ export function formatExamFilename(
 
   if (!subjectCode) subjectCode = "exam";
 
-  // 2. Year (4-digit: e.g. 2026, 2025)
+  // 2. Year (4-digit: e.g. 2026, 2025, 2023)
   let year = "";
   const yearSources = [examData.session, examData.paper, examData.pdfUrl, fallbackFilename];
   for (const src of yearSources) {
@@ -72,7 +111,7 @@ export function formatExamFilename(
     }
   }
   if (!year) {
-    // Check 2-digit year after session letter (e.g. m26, s25, w24)
+    // Check 2-digit year after session letter (e.g. m26, s25, s23, w24)
     for (const src of yearSources) {
       if (!src) continue;
       const shortYearMatch = src.match(/[msw](\d{2})\b/i);
@@ -120,19 +159,20 @@ export function formatExamFilename(
   }
 
   // 4. Variant (e.g. "12", "11", "13", "22")
-  let variant = "";
-  if (paperMatch) {
-    variant = paperMatch[2];
-  }
+  let variant = variantFromSlash;
   if (!variant) {
     const varSources = [examData.paper, examData.pdfUrl, examData.component, fallbackFilename];
     for (const src of varSources) {
       if (!src) continue;
-      const vMatch = src.match(/(?:paper|qp|ms|variant|scheme)?[_\s-]*(\d{1,2})\.pdf/i) ||
-                     src.match(/(?:paper|component)[_\s]*(\d{1,2})\b/i) ||
-                     src.match(/[_\s](\d{2})\b/);
-      if (vMatch) {
-        variant = vMatch[1];
+      const clean = src.toLowerCase().replace(/\.pdf$/i, "");
+      const m =
+        clean.match(/(?:paper|component|variant|qp|ms)[_\s-]*([1-6][1-6])\b/i) ||
+        clean.match(/_([1-6][1-6])$/) ||
+        clean.match(/\b([1-6][1-6])\b/) ||
+        clean.match(/_(\d{1,2})$/) ||
+        clean.match(/\b(\d{1,2})\b/);
+      if (m) {
+        variant = m[1];
         break;
       }
     }
