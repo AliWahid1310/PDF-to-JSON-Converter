@@ -66,23 +66,24 @@ function buildExplanationPrompt(
   const maxQ = qList[qList.length - 1].number;
 
   return `You are a distinguished academic teacher and subject expert in ${subject || "Science"}.
-You are provided with a verified list of exam questions (from Question ${minQ} to ${maxQ}), multiple-choice options, and the verified correct answer for each.
+You are provided with a verified list of exam questions (from Question ${minQ} to ${maxQ}), multiple-choice options (A, B, C, D), and the confirmed correct answer for each.
 
-Your task is to write a rigorous, high-quality, 1-3 sentence academic and conceptual explanation for each question explaining WHY that specific answer is scientifically/conceptually correct.
+Your sole task is to write a clear, accurate, 1-3 sentence academic and conceptual explanation for each question explaining EXACTLY WHY the confirmed correct answer is the right choice.
 
-STRICT CONSTRAINTS:
-1. NEVER mention "the marking scheme", "mark scheme", "the answer key", "the official answer", "verified by", or "marking guide". Write as an authoritative teacher explaining the underlying concepts, definitions, formulas, calculations, or physical/biological/chemical laws directly.
-2. Address why the verified answer is correct and why other key concepts differentiate it.
-3. Each explanation MUST be a substantive, concept-level explanation (at least 2 sentences). Do NOT write generic statements like "Option A is correct based on principles of Physics" — instead explain the specific scientific reasoning.
-4. CRITICAL: You MUST output an explanation for EVERY question listed in the input (from Question ${minQ} to ${maxQ}). Do NOT skip or omit any question number.
-5. Return ONLY a pure JSON object where each key is the string question number and the value is the explanation string:
+CRITICAL INSTRUCTIONS:
+1. STRICT ADHERENCE TO CONFIRMED ANSWER: The confirmed correct answer (both option letter and text) provided in the input is 100% authoritative. You MUST write an explanation justifying why THIS specific option is correct. Do NOT choose a different option or attempt to solve the question independently.
+2. DIRECT CONCEPTUAL REASONING: Explain the scientific principle, definition, formula, calculation, or logical deduction that directly justifies why this specific option is correct and why other options are incorrect or differentiated.
+3. NEVER MENTION THE MARK SCHEME: NEVER use phrases like "According to the mark scheme", "The answer key states", "As verified by", "The official answer is", etc. Write as an authoritative teacher explaining the underlying concepts directly to a student.
+4. SUBSTANTIVE & SPECIFIC: Each explanation MUST specifically address the question's content and the correct option's concept (at least 2 sentences). Do NOT write generic placeholder text like "Option B is correct based on principles of Physics".
+5. COMPLETE COVERAGE: You MUST output an explanation for EVERY question listed in the input (from Question ${minQ} to ${maxQ}). Do not skip or omit any question number.
+6. FORMAT: Return ONLY a pure JSON object where each key is the string question number and the value is the explanation string:
 {
-  "${minQ}": "Explanation for question ${minQ}...",
+  "${minQ}": "Conceptual explanation directly explaining why this confirmed option is correct...",
   ...
 }
-6. Output valid JSON only, without markdown code fences or any other commentary.
+7. Return valid JSON only, without markdown code fences or any other commentary.
 
-Questions:
+Questions to explain:
 ${JSON.stringify(qList, null, 2)}`;
 }
 
@@ -105,14 +106,21 @@ export async function POST(req: NextRequest) {
 
     const ai = new GoogleGenAI({ apiKey: activeKey });
 
-    // Ensure we ONLY supply question number, text, options, and the verified correct answer.
-    // The question number and answer mapping are strictly fixed and immutable.
-    const promptQuestions = questions.map((q: any) => ({
-      number: q.number,
-      question: q.question,
-      options: q.options || {},
-      verifiedAnswer: q.correctAnswer,
-    }));
+    // Format questions with explicit confirmed option letter and text so the AI
+    // explains the exact answer with 100% fidelity without hallucinating or switching options.
+    const promptQuestions = questions.map((q: any) => {
+      const ansLetter = (q.correctAnswer || "").trim().toUpperCase();
+      const options = q.options || {};
+      const ansText = options[ansLetter] || "";
+      return {
+        number: q.number,
+        question: q.question,
+        options,
+        confirmedCorrectOption: ansLetter,
+        confirmedCorrectOptionText: ansText || undefined,
+        verifiedAnswer: ansLetter,
+      };
+    });
 
     // Split questions into parallel chunks of up to 20 questions.
     // This dramatically boosts generation speed, eliminates token limit truncation,
