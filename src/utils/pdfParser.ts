@@ -1,4 +1,4 @@
-import { extractText } from "unpdf";
+import { extractText, extractTextItems } from "unpdf";
 import { ExamMergedJson, QuestionItem } from "@/types/exam";
 
 /**
@@ -212,7 +212,7 @@ function stripArtifacts(text: string): string {
     .replace(/bestexamhelp\.com[^\n]*/gi, "")
     .replace(/physicsandmathstutor\.com[^\n]*/gi, "")
     // Cambridge copyright notices (including 2026+ variations)
-    .replace(/©\s*(?:Cambridge University Press & Assessment|Cambridge Assessment International Education|UCLES|Cambridge International Examinations|Cambridge International)[^\n]*/gi, "")
+    .replace(/.*©\s*(?:Cambridge University Press & Assessment|Cambridge Assessment International Education|UCLES|Cambridge International Examinations|Cambridge International)[^\n]*/gi, "")
     .replace(/Cambridge University Press & Assessment[^\n]*/gi, "")
     .replace(/Cambridge Assessment International Education[^\n]*/gi, "")
     .replace(/Cambridge International Examinations[^\n]*/gi, "")
@@ -220,8 +220,9 @@ function stripArtifacts(text: string): string {
     // Turn over & blank page notices
     .replace(/\[?\bTurn over\b\]?/gi, "")
     .replace(/\bBLANK PAGE\b/gi, "")
-    // Syllabus footer codes like 9700/11/M/J/26
+    // Syllabus footer codes like 9700/11/M/J/26 or 03_0452_12_2026_1.21
     .replace(/\b\d{4}\/\d{2}\/[A-Za-z0-9\/]+\b/gi, "")
+    .replace(/\b\d{2}_\d{4}_\d{2}_\d{4}_[0-9\.]+\b/gi, "")
     // Barcode strings like *4083621324*
     .replace(/\*[0-9]{8,}\*/g, "")
     // Print batch codes
@@ -229,13 +230,73 @@ function stripArtifacts(text: string): string {
 }
 
 /**
- * Safely strips page numbers that appear at the top of a page.
- * Only strips if the number is on the first line and followed immediately by a Cambridge header/copyright line,
- * ensuring question numbers on their own line (e.g. "4\n...") are NEVER deleted.
+ * Assembles page text by sorting text items geographically (top-to-bottom, left-to-right).
+ * This ensures question numbers in the margin appear at the start of question sentences,
+ * options appear in A, B, C, D order, and page numbers at the top/bottom are safely stripped.
+ */
+function assemblePageTextFromItems(pageItems: any[]): string {
+  if (!pageItems || pageItems.length === 0) return "";
+  const items = pageItems.filter((it: any) => it.str && it.str.trim());
+  if (items.length === 0) return "";
+
+  // Sort items top-to-bottom (higher y first), and left-to-right (lower x first)
+  const sorted = [...items].sort((a, b) => {
+    if (Math.abs(b.y - a.y) > 3.5) {
+      return b.y - a.y; // top to bottom
+    }
+    return a.x - b.x; // left to right
+  });
+
+  const lines: string[] = [];
+  let currentLine: any[] = [];
+  let currentY: number | null = null;
+
+  for (const item of sorted) {
+    if (currentY === null || Math.abs(item.y - currentY) > 3.5) {
+      if (currentLine.length > 0) {
+        lines.push(currentLine.map((it: any) => it.str.trim()).join(" "));
+      }
+      currentLine = [item];
+      currentY = item.y;
+    } else {
+      currentLine.push(item);
+    }
+  }
+  if (currentLine.length > 0) {
+    lines.push(currentLine.map((it: any) => it.str.trim()).join(" "));
+  }
+
+  // Strip top line if it is just a standalone page number (e.g. "2", "3")
+  if (lines.length > 0 && /^\s*\d{1,2}\s*$/.test(lines[0].trim())) {
+    lines.shift();
+  }
+
+  // Strip bottom lines if they are copyright, turn over, document code, or page number
+  while (lines.length > 0) {
+    const last = lines[lines.length - 1].trim();
+    if (
+      /^\s*\d{1,2}\s*$/.test(last) ||
+      /©|Cambridge|Turn over|\bBLANK PAGE\b|\d{2}_\d{4}/i.test(last)
+    ) {
+      lines.pop();
+    } else {
+      break;
+    }
+  }
+
+  return normalizeSymbols(lines.join("\n"));
+}
+
+/**
+ * Safely strips page numbers that appear at the top or bottom of a page.
+ * Strips header page numbers and footer page numbers so they can never be mistaken
+ * for question numbers.
  */
 function stripPageHeader(pageText: string): string {
   if (!pageText) return "";
   const lines = pageText.split("\n");
+  
+  // 1. Strip top page number if followed by header/copyright
   let firstIdx = -1;
   let secondIdx = -1;
   for (let i = 0; i < lines.length; i++) {
@@ -255,6 +316,25 @@ function stripPageHeader(pageText: string): string {
       }
     }
   }
+
+  // 2. Strip bottom page number if last line is a standalone number
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const trimmed = lines[i].trim();
+    if (!trimmed) continue;
+    if (/^\d{1,2}$/.test(trimmed)) {
+      lines[i] = "";
+      for (let j = i - 1; j >= 0; j--) {
+        const prev = lines[j].trim();
+        if (!prev) continue;
+        if (/©|Cambridge|Turn over|\d{2}_\d{4}/i.test(prev)) {
+          lines[j] = "";
+        }
+        break;
+      }
+    }
+    break;
+  }
+
   return lines.join("\n");
 }
 
@@ -756,10 +836,25 @@ export async function parseExamPdfs(
   const msFullText = msPages.join("\n");
   const answersMap = parseMarkingScheme(msFullText);
 
-  // 2. Extract text from Question Paper using unpdf
-  const qpResult = await extractText(new Uint8Array(qpBuffer));
-  const rawQpPages = Array.isArray(qpResult.text) ? qpResult.text : [qpResult.text || ""];
-  const qpPages = rawQpPages.map((p) => normalizeSymbols(p));
+  // 2. Extract structured text from Question Paper using unpdf
+  let qpPages: string[] = [];
+  try {
+    const qpItemsResult = await extractTextItems(new Uint8Array(qpBuffer));
+    if (qpItemsResult && Array.isArray(qpItemsResult.items) && qpItemsResult.items.length > 0) {
+      for (let p = 0; p < qpItemsResult.items.length; p++) {
+        qpPages.push(assemblePageTextFromItems(qpItemsResult.items[p]));
+      }
+    }
+  } catch (err) {
+    console.warn("extractTextItems fallback to extractText:", err);
+  }
+
+  // Fallback if extractTextItems was unavailable or produced empty pages
+  if (qpPages.length === 0 || qpPages.every((p) => !p.trim())) {
+    const qpResult = await extractText(new Uint8Array(qpBuffer));
+    const rawQpPages = Array.isArray(qpResult.text) ? qpResult.text : [qpResult.text || ""];
+    qpPages = rawQpPages.map((p) => normalizeSymbols(p));
+  }
 
   const meta = parseExamMetadata(
     qpPages.length > 0 ? qpPages[0] : "",
