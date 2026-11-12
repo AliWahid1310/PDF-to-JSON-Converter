@@ -898,19 +898,62 @@ export async function parseExamPdfs(
 
   for (let qNum = 1; qNum <= totalQuestions; qNum++) {
     const slice = bodyText.slice(currentOffset);
-    // Matches question number at start of line:
-    // e.g. "4 Which...", "4. Which...", "4) Which...", or "4\nWhich..."
     const qPattern = new RegExp(
       '(?:^|\\n)[ \\t]*' + qNum + '(?:\\.|\\))?(?:[ \\t\\u00A0]+|\\n[ \\t]*)(?=[^\\n]*[A-Za-z])',
-      'm'
+      'gm'
     );
-    const match = slice.match(qPattern);
 
-    if (match) {
-      const qStart = currentOffset + (match.index || 0);
-      questionStarts.push({ qNum, qStart, headerLen: match[0].length });
-      // Advance offset past the question number match so internal statements don't interfere
-      currentOffset = qStart + match[0].length;
+    const matches = [...slice.matchAll(qPattern)];
+    let bestMatch: QuestionStart | null = null;
+
+    // Filter candidate matches to differentiate real question headers from internal list items
+    // (e.g. internal statements like "1 digestion, 2 respiration, 3 excretion"):
+    for (const m of matches) {
+      if (m.index === undefined) continue;
+      const matchIndex = currentOffset + m.index;
+      const textAfter = bodyText.slice(matchIndex + m[0].length);
+
+      // A real question must have options (A, B, C, D) following it within its text block
+      const hasOptions = /\bA\b[\s\S]+?\bB\b/.test(textAfter.slice(0, 3500));
+
+      // If a previous question was matched, the new question must start AFTER the previous question's options
+      let afterPrevOptions = true;
+      if (questionStarts.length > 0) {
+        const prevStart = questionStarts[questionStarts.length - 1];
+        const textBetween = bodyText.slice(prevStart.qStart, matchIndex);
+        afterPrevOptions = /\bA\b[\s\S]+?\bB\b/.test(textBetween);
+      }
+
+      if (afterPrevOptions && hasOptions) {
+        bestMatch = { qNum, qStart: matchIndex, headerLen: m[0].length };
+        break;
+      }
+    }
+
+    // Fallback if strict filter didn't match: take the first match that is after previous options
+    if (!bestMatch && matches.length > 0) {
+      for (const m of matches) {
+        if (m.index === undefined) continue;
+        const matchIndex = currentOffset + m.index;
+        if (questionStarts.length === 0) {
+          bestMatch = { qNum, qStart: matchIndex, headerLen: m[0].length };
+          break;
+        }
+        const prevStart = questionStarts[questionStarts.length - 1];
+        const textBetween = bodyText.slice(prevStart.qStart, matchIndex);
+        if (/\bA\b/.test(textBetween)) {
+          bestMatch = { qNum, qStart: matchIndex, headerLen: m[0].length };
+          break;
+        }
+      }
+      if (!bestMatch && matches[0].index !== undefined) {
+        bestMatch = { qNum, qStart: currentOffset + matches[0].index, headerLen: matches[0].length };
+      }
+    }
+
+    if (bestMatch) {
+      questionStarts.push(bestMatch);
+      currentOffset = bestMatch.qStart + bestMatch.headerLen;
     }
   }
 
